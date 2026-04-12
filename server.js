@@ -28,8 +28,8 @@ const MIME = {
   '.ico':  'image/x-icon',
 };
 
-// Only these files may be served. Anything else → 404.
-const ALLOWED = new Set(['index.html', 'editor.html', 'levels.js']);
+// Only top-level app files and project assets may be served. Anything else → 404.
+const ALLOWED = new Set(['index.html', 'editor.html', 'levels.js', 'assets/princess-main.png']);
 
 function send(res, status, body, headers = {}) {
   res.writeHead(status, { 'Cache-Control': 'no-store', ...headers });

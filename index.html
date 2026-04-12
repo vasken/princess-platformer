@@ -36,6 +36,10 @@
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
+  const playerSprite = new Image();
+  let playerSpriteReady = false;
+  playerSprite.onload = () => { playerSpriteReady = true; };
+  playerSprite.src = 'assets/princess-main.png';
 
   // ---------- PALETTE (Commander Keen-ish EGA flavor) ----------
   const COLORS = {
@@ -771,6 +775,19 @@
     const drawH = player.h * sy;
     const x = player.x - cam.x + (player.w - drawW) / 2;
     const y = player.y - cam.y + (player.h - drawH); // pin to feet
+
+    if (playerSpriteReady) {
+      ctx.save();
+      if (player.facing < 0) {
+        ctx.translate(x + drawW, y);
+        ctx.scale(-1, 1);
+        ctx.drawImage(playerSprite, 0, 0, drawW, drawH);
+      } else {
+        ctx.drawImage(playerSprite, x, y, drawW, drawH);
+      }
+      ctx.restore();
+      return;
+    }
 
     // Pants (lower half)
     ctx.fillStyle = COLORS.playerPants;
