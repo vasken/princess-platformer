@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Keen-Like Platformer</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000;
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* Letterbox: preserve 16:9, scale to fit viewport, crisp pixels. */
+  canvas {
+    background: #5FCDE4;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    max-width: 100vw;
+    max-height: 100vh;
+    aspect-ratio: 16 / 9;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="960" height="540"></canvas>
+<script src="levels.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  // ---------- PALETTE (Commander Keen-ish EGA flavor) ----------
+  const COLORS = {
+    sky:          '#5FCDE4',
+    mountainBack: '#8E3F8E',
+    mountainFront:'#5A255A',
+    rock:         '#AA44AA',
+    rockDark:     '#661C66',
+    grass:        '#55EE55',
+    grassDark:    '#2A9A2A',
+    playerShirt:  '#EC2E2E',
+    playerPants:  '#2A9A2A',
+    playerHelmet: '#F5F5F5',
+    goalPole:     '#DDDDDD',
+    goalFlagA:    '#FFDD00',
+    goalFlagB:    '#EC2E2E',
+    hudBg:        'rgba(0,0,0,0.55)',
+    hudText:      '#FFFFFF',
+    star:         '#FFF27A',
+    pitBand:      '#2A0044',
+    pitSpike:     '#1A0033',
+    coin:         '#FFDD00',
+    coinDark:     '#C89600',
+    enemyBody:    '#22AA22',
+    enemyDark:    '#0C5F0C',
+    enemyFoot:    '#FF8844',
+    dust:         '#E4D4E4',
+  };
+
+  // ---------- INPUT ----------
+  // `keys` = currently-held. `pressed` = edge-triggered, cleared each tick.
+  const keys    = Object.create(null);
+  const pressed = Object.create(null);
+
+  const BLOCKED = new Set([
+    'ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space','KeyW','KeyA','KeyS','KeyD',
+  ]);
+  window.addEventListener('keydown', (e) => {
+    if (BLOCKED.has(e.code)) e.preventDefault();
+    // Unlock audio inside a real user gesture (browsers require this).
+    Sfx.unlock();
+    if (!keys[e.code]) pressed[e.code] = true;
+    keys[e.code] = true;
+  });
+  window.addEventListener('keyup', (e) => {
+    keys[e.code] = false;
+  });
+  window.addEventListener('blur', () => {
+    for (const k in keys) keys[k] = false;
+  });
+
+  const isLeft         = () => keys['ArrowLeft']  || keys['KeyA'];
+  const isRight        = () => keys['ArrowRight'] || keys['KeyD'];
+  const isDown         = () => keys['ArrowDown']  || keys['KeyS'];
+  const jumpPressedNow = () => pressed['Space']   || pressed['ArrowUp'] || pressed['KeyW'];
+  const jumpHeld       = () => keys['Space']      || keys['ArrowUp']    || keys['KeyW'];
+
+  // ---------- AUDIO ----------
+  // Tiny WebAudio synth. No assets. AudioContext is created lazily inside a
+  // real user gesture (keydown) so browsers will actually let it run.
+  const Sfx = (() => {
+    let ac = null;
+    let ready = false;
+
+    function unlock() {
+      if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        ac = new AC();
+        ready = true;
+      } catch (_) {}
+    }
+
+    // Short pitched tone with linear attack and exponential decay.
+    // If `freqEnd` != freq, sweeps between them exponentially.
+    function tone(freq, freqEnd, dur, type = 'square', gain = 0.08) {
+      if (!ready) return;
+      const t = ac.currentTime;
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, t);
+      if (freqEnd && freqEnd !== freq) {
+        o.frequency.exponentialRampToValueAtTime(Math.max(1, freqEnd), t + dur);
+      }
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(gain, t + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g).connect(ac.destination);
+      o.start(t);
+      o.stop(t + dur + 0.02);
+    }
+
+    // White noise burst for landings/impacts.
+    function noise(dur, gain = 0.06) {
+      if (!ready) return;
+      const t = ac.currentTime;
+      const len = Math.max(1, Math.floor(ac.sampleRate * dur));
+      const buf = ac.createBuffer(1, len, ac.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+      const src = ac.createBufferSource();
+      src.buffer = buf;
+      const g = ac.createGain();
+      g.gain.value = gain;
+      src.connect(g).connect(ac.destination);
+      src.start(t);
+    }
+
+    return {
+      unlock,
+      jump:   () => tone(380, 720,  0.12, 'square',   0.08),
+      land:   () => noise(0.06, 0.05),
+      pickup: () => {
+        tone(880, 880, 0.05, 'square', 0.08);
+        setTimeout(() => tone(1320, 1320, 0.08, 'square', 0.08), 40);
+      },
+      stomp:  () => tone(260, 110, 0.10, 'square',   0.10),
+      bonk:   () => tone(180, 140, 0.06, 'square',   0.06),
+      death:  () => tone(400, 60,  0.50, 'sawtooth', 0.12),
+      win:    () => {
+        [523, 659, 784, 1046].forEach((f, i) =>
+          setTimeout(() => tone(f, f, 0.14, 'square', 0.09), i * 90)
+        );
+      },
+    };
+  })();
+
+  // ---------- TUNING ----------
+  const GRAVITY       = 0.6;
+  const MAX_FALL      = 14;
+  const MOVE_ACCEL    = 0.8;
+  const AIR_ACCEL     = 0.5;
+  const MAX_RUN       = 4.6;
+  const FRICTION      = 0.78;
+  const AIR_FRICTION  = 0.94;
+  const JUMP_VELOCITY = -11.5;  // v^2/(2g) ≈ 110px apex
+  const JUMP_CUT      = 0.45;
+  const COYOTE_FRAMES = 7;      // ~117ms
+  const BUFFER_FRAMES = 7;      // ~117ms
+  const STOMP_BOUNCE  = 0.7;    // fraction of JUMP_VELOCITY given on stomp
+  const DROP_FRAMES   = 8;      // ignore one-ways for this many ticks after drop-thru
+
+  // ---------- LEVELS ----------
+  // Defined in levels.js so the editor (editor.html) can load & save the same file.
+  const LEVELS = window.LEVELS;
+
+  let level, platforms, goal;
+  let currentLevelIndex = 0;
+
+  // Level-name banner that shows briefly after loading a level.
+  let bannerFrames = 0;
+  let bannerText = '';
+  function showBanner(text, frames = 110) {
+    bannerText = text;
+    bannerFrames = frames;
+  }
+
+  // ---------- PLAYER ----------
+  const player = {
+    x: 80, y: 300, w: 26, h: 40,
+    vx: 0, vy: 0,
+    onGround: false,
+    facing: 1,
+    coyote: 0,
+    buffer: 0,
+    jumpCut: false,
+    groundPlatform: null,  // what we're standing on (for drop-through)
+    dropThrough: 0,        // frames remaining where one-ways are pass-through
+    squashT: 0,            // visual squash timer (landing)
+    stretchT: 0,           // visual stretch timer (jumping)
+  };
+
+  let score = 0;
+  let maxX = player.x;
+
+  // ---------- PARTICLES ----------
+  // Lightweight dust/debris system. Short-lived, affected by gravity.
+  const particles = [];
+  function spawnDust(cx, cy, count = 7, color = COLORS.dust) {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI - Math.PI; // upward hemisphere
+      const s = 0.8 + Math.random() * 1.6;
+      particles.push({
+        x: cx, y: cy,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s - 0.5,
+        life: 18 + (Math.random() * 6 | 0),
+        size: 2 + (Math.random() * 2 | 0),
+        color,
+      });
+    }
+  }
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.18;       // light gravity
+      p.vx *= 0.96;
+      p.life--;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  // ---------- SCREEN SHAKE ----------
+  let shakeFrames = 0;
+  let shakeMag = 0;
+  function shake(frames, mag) {
+    if (frames > shakeFrames) shakeFrames = frames;
+    if (mag > shakeMag)       shakeMag = mag;
+  }
+
+  // ---------- STATE MACHINE ----------
+  // PLAY <-> PAUSE, plus terminal DEAD/WIN states that await a keypress to reset.
+  const GameState = {
+    current: 'PLAY',
+    transitionTo(newState) {
+      const prev = this.current;
+      this.current = newState;
+      switch (newState) {
+        case 'PLAY':
+          // DEAD → retry current level (keep score).
+          // WIN or fresh boot → full reset from level 1.
+          // PAUSE → just resume, no state change.
+          if (prev === 'DEAD') retryLevel();
+          else if (prev !== 'PAUSE') resetGame();
+          break;
+        case 'DEAD':
+          Sfx.death();
+          shake(18, 8);
+          spawnDust(player.x + player.w / 2, player.y + player.h, 14, '#FF6666');
+          break;
+        case 'WIN':
+          Sfx.win();
+          break;
+        case 'PAUSE':
+          break;
+      }
+    },
+  };
+
+  function loadLevel(index) {
+    // Deep-ish reset so replays don't see collected pickups / dead enemies.
+    currentLevelIndex = index;
+    const src = LEVELS[index];
+    level = {
+      ...src,
+      pickups: src.pickups.map(p => ({ ...p, taken: false })),
+      enemies: src.enemies.map(e => ({ ...e, alive: true })),
+    };
+    platforms = level.platforms;
+    goal = level.goal;
+
+    // Vertical camera bounds — auto-computed from platform geometry.
+    const minPlatY = Math.min(...platforms.map(p => p.y));
+    level.camCeiling = minPlatY - 100;
+    level.camFloor   = level.deathY;
+
+    showBanner('LEVEL ' + (index + 1) + ' — ' + (level.name || ''));
+  }
+
+  // Place the player at the current level's spawn and clear transient state.
+  // Called on fresh start, retry, and level advance — so we don't repeat the
+  // same position-reset in three places.
+  function placePlayerAtSpawn() {
+    player.x = level.spawn.x; player.y = level.spawn.y;
+    player.vx = 0; player.vy = 0;
+    player.onGround = false;
+    player.coyote = 0; player.buffer = 0;
+    player.jumpCut = false;
+    player.groundPlatform = null;
+    player.dropThrough = 0;
+    player.squashT = 0; player.stretchT = 0;
+    player.facing = 1;
+    maxX = player.x;
+    particles.length = 0;
+    shakeFrames = 0; shakeMag = 0;
+  }
+
+  // Starting level: honour ?level=N from the URL (1-indexed for humans,
+  // clamped to available levels) so the editor can jump straight to a
+  // specific level for playtesting.
+  function startingLevelIndex() {
+    const n = parseInt(new URLSearchParams(location.search).get('level'), 10);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(LEVELS.length - 1, n - 1));
+  }
+
+  // Fresh game: first level (or ?level=N), score 0.
+  function resetGame() {
+    loadLevel(startingLevelIndex());
+    placePlayerAtSpawn();
+    initCamera();
+    score = 0;
+  }
+
+  // Retry current level after death: keep score, reload the level fresh.
+  function retryLevel() {
+    loadLevel(currentLevelIndex);
+    placePlayerAtSpawn();
+    initCamera();
+  }
+
+  // Advance to the next level (or trigger WIN if this was the last one).
+  // Keeps the score running across levels.
+  function advanceLevel() {
+    if (currentLevelIndex + 1 < LEVELS.length) {
+      loadLevel(currentLevelIndex + 1);
+      placePlayerAtSpawn();
+      initCamera();
+      Sfx.pickup();  // light "level up" chime
+    } else {
+      GameState.transitionTo('WIN');
+    }
+  }
+
+  // ---------- COLLISION ----------
+  function aabb(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x &&
+           a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  // Axis-separated swept resolution.
+  // Returns { landed, hitWall, hitCeiling } so callers can trigger FX.
+  // Also sets player.groundPlatform to whatever we landed on (for drop-through).
+  function moveAndCollide() {
+    const result = { landed: false, hitWall: false, hitCeiling: false };
+
+    // --- X axis (one-way platforms are pass-through on X) ---
+    player.x += player.vx;
+    for (const p of platforms) {
+      if (p.type === 'one-way') continue;
+      if (aabb(player, p)) {
+        if (player.vx > 0)      player.x = p.x - player.w;
+        else if (player.vx < 0) player.x = p.x + p.w;
+        player.vx = 0;
+        result.hitWall = true;
+      }
+    }
+
+    // --- Y axis ---
+    player.y += player.vy;
+    let landed = false;
+    let landedOn = null;
+    for (const p of platforms) {
+      if (p.type === 'one-way') {
+        // Skip one-ways entirely during drop-through grace frames.
+        if (player.dropThrough > 0) continue;
+        // Only collide when falling AND previous feet position was at or near
+        // the platform top. The 6 px tolerance handles the edge case where the
+        // player barely reaches a high platform — feet clip slightly below p.y
+        // at apex, so without tolerance prevFeet > p.y and landing never fires.
+        if (player.vy > 0 && (player.y + player.h - player.vy) <= p.y + 6) {
+          if (aabb(player, p)) {
+            player.y = p.y - player.h;
+            player.vy = 0;
+            landed = true;
+            landedOn = p;
+            result.landed = true;
+          }
+        }
+        continue;
+      }
+      if (aabb(player, p)) {
+        if (player.vy > 0) {
+          player.y = p.y - player.h;
+          player.vy = 0;
+          landed = true;
+          landedOn = p;
+          result.landed = true;
+        } else if (player.vy < 0) {
+          player.y = p.y + p.h;
+          player.vy = 0;
+          result.hitCeiling = true;
+        }
+      }
+    }
+    player.onGround = landed;
+    player.groundPlatform = landedOn;
+    return result;
+  }
+
+  // ---------- UPDATE ----------
+  function update() {
+    // Pause toggle — works from PLAY or PAUSE, ignored in DEAD/WIN.
+    if (pressed['Escape'] || pressed['KeyP']) {
+      if (GameState.current === 'PLAY')       GameState.transitionTo('PAUSE');
+      else if (GameState.current === 'PAUSE') GameState.transitionTo('PLAY');
+    }
+
+    if (GameState.current === 'PAUSE') return;
+
+    if (GameState.current === 'DEAD' || GameState.current === 'WIN') {
+      if (pressed['KeyR'] || pressed['Space'] || pressed['Enter']) {
+        GameState.transitionTo('PLAY');
+      }
+      // Particles still animate under the overlay for a little life.
+      updateParticles();
+      if (shakeFrames > 0) shakeFrames--;
+      return;
+    }
+
+    // ---- PLAY state ----
+
+    // --- Horizontal movement ---
+    const accel = player.onGround ? MOVE_ACCEL : AIR_ACCEL;
+    if (isLeft() && !isRight()) {
+      player.vx -= accel;
+      player.facing = -1;
+    } else if (isRight() && !isLeft()) {
+      player.vx += accel;
+      player.facing = 1;
+    } else {
+      player.vx *= player.onGround ? FRICTION : AIR_FRICTION;
+      if (Math.abs(player.vx) < 0.05) player.vx = 0;
+    }
+    if (player.vx >  MAX_RUN) player.vx =  MAX_RUN;
+    if (player.vx < -MAX_RUN) player.vx = -MAX_RUN;
+
+    // --- Drop-through (Down + Jump on a one-way platform) ---
+    // Must check BEFORE the normal jump-buffer logic so the press is consumed.
+    const wantDropThrough =
+      jumpPressedNow() && isDown() &&
+      player.onGround && player.groundPlatform &&
+      player.groundPlatform.type === 'one-way';
+    if (wantDropThrough) {
+      player.dropThrough = DROP_FRAMES;
+      player.onGround = false;
+      player.groundPlatform = null;
+      player.y += 2;  // nudge below the platform top
+      // Consume the jump press so we don't also buffer a jump.
+      delete pressed['Space'];
+      delete pressed['ArrowUp'];
+      delete pressed['KeyW'];
+    }
+
+    // --- Jump: buffering + coyote time ---
+    if (jumpPressedNow()) player.buffer = BUFFER_FRAMES;
+
+    const canJump = player.onGround || player.coyote > 0;
+    if (player.buffer > 0 && canJump) {
+      player.vy       = JUMP_VELOCITY;
+      player.onGround = false;
+      player.coyote   = 0;
+      player.buffer   = 0;
+      player.jumpCut  = false;
+      player.stretchT = 6;
+      Sfx.jump();
+    }
+
+    // Variable jump height (cut once per jump on release).
+    if (!jumpHeld() && player.vy < 0 && !player.jumpCut) {
+      player.vy *= JUMP_CUT;
+      player.jumpCut = true;
+    }
+
+    // --- Gravity ---
+    player.vy += GRAVITY;
+    if (player.vy > MAX_FALL) player.vy = MAX_FALL;
+
+    const wasOnGround = player.onGround;
+    const prevVy = player.vy;
+
+    const collision = moveAndCollide();
+
+    // React to collision events (this is why moveAndCollide returns them).
+    if (collision.landed && !wasOnGround) {
+      // Just landed this tick. Juice it.
+      player.squashT = 7;
+      Sfx.land();
+      spawnDust(player.x + player.w / 2, player.y + player.h - 1, 6);
+      // Hard landings shake a touch.
+      if (prevVy > 9) shake(4, 2);
+    }
+    if (collision.hitCeiling) {
+      Sfx.bonk();
+      shake(3, 2);
+    }
+
+    // Coyote time bookkeeping.
+    if (wasOnGround && !player.onGround && player.vy >= 0) {
+      player.coyote = COYOTE_FRAMES;
+    } else if (player.coyote > 0) {
+      player.coyote--;
+    }
+    if (player.buffer > 0) player.buffer--;
+    if (player.dropThrough > 0) player.dropThrough--;
+    if (player.squashT > 0) player.squashT--;
+    if (player.stretchT > 0) player.stretchT--;
+
+    // --- Pickups ---
+    for (const pk of level.pickups) {
+      if (pk.taken) continue;
+      if (aabb(player, pk)) {
+        pk.taken = true;
+        score += 100;
+        Sfx.pickup();
+        spawnDust(pk.x + pk.w / 2, pk.y + pk.h / 2, 4, COLORS.coin);
+      }
+    }
+
+    // --- Enemies ---
+    for (const e of level.enemies) {
+      if (!e.alive) continue;
+      e.x += e.vx;
+      if (e.x < e.minX)           { e.x = e.minX;           e.vx = -e.vx; }
+      if (e.x + e.w > e.maxX)     { e.x = e.maxX - e.w;     e.vx = -e.vx; }
+
+      if (aabb(player, e)) {
+        // Stomp: player is descending AND previous feet were above enemy top.
+        const prevFeet = player.y + player.h - player.vy;
+        if (player.vy > 0 && prevFeet <= e.y + 2) {
+          e.alive = false;
+          player.vy = JUMP_VELOCITY * STOMP_BOUNCE;
+          player.jumpCut = false;
+          player.stretchT = 6;
+          score += 200;
+          Sfx.stomp();
+          spawnDust(e.x + e.w / 2, e.y + e.h, 8, COLORS.enemyDark);
+          shake(3, 2);
+        } else {
+          GameState.transitionTo('DEAD');
+          return;
+        }
+      }
+    }
+
+    // --- Score: furthest-right progress only ---
+    if (player.x > maxX) {
+      score += (player.x - maxX) | 0;
+      maxX = player.x;
+    }
+
+    // --- Win / lose ---
+    // Touching the goal advances to the next level. If this was the final
+    // level, advanceLevel() transitions to WIN internally.
+    if (aabb(player, goal)) {
+      advanceLevel();
+      return;
+    }
+    if (player.y > level.deathY) {
+      GameState.transitionTo('DEAD');
+      return;
+    }
+
+    // Particles, shake, banner tick.
+    updateParticles();
+    if (shakeFrames > 0) shakeFrames--;
+    if (bannerFrames > 0) bannerFrames--;
+  }
+
+  // ---------- CAMERA ----------
+  // Smoothed follow: X with look-ahead bias, Y locked to last grounded
+  // position so the camera doesn't bob mid-jump.
+  const cam = { x: 0, y: 0 };
+  let lastGroundY = 0;
+
+  function initCamera() {
+    lastGroundY = player.y;
+    const targetY = lastGroundY - H * 0.7;
+    const maxY = level.camFloor - H;
+    const minY = Math.min(level.camCeiling, maxY);
+    cam.y = Math.max(minY, Math.min(targetY, maxY));
+    cam.x = Math.max(0, Math.min(player.x + player.w / 2 - W / 2, level.endX - W));
+  }
+
+  function updateCamera() {
+    // Horizontal
+    const lookAhead = player.facing * 70;
+    const targetX = player.x + player.w / 2 - W / 2 + lookAhead;
+    cam.x += (targetX - cam.x) * 0.10;
+    if (cam.x < 0) cam.x = 0;
+    if (cam.x > level.endX - W) cam.x = level.endX - W;
+
+    // Vertical — only retarget when on ground to avoid jump bobbing.
+    if (player.onGround) lastGroundY = player.y;
+    const targetY = lastGroundY - H * 0.7;
+    cam.y += (targetY - cam.y) * 0.08;
+    const maxY = level.camFloor - H;
+    const minY = Math.min(level.camCeiling, maxY);
+    if (cam.y < minY) cam.y = minY;
+    if (cam.y > maxY) cam.y = maxY;
+  }
+
+  // ---------- RENDER ----------
+  function drawBackground() {
+    ctx.fillStyle = COLORS.sky;
+    ctx.fillRect(0, 0, W, H);
+
+    // Stars
+    ctx.fillStyle = COLORS.star;
+    for (let i = 0; i < 50; i++) {
+      const raw = (i * 137 - cam.x * 0.1) % (W + 200);
+      const sx  = raw < 0 ? raw + W + 200 : raw;
+      const sy  = (i * 53) % 200 + 20;
+      ctx.fillRect(sx - 100, sy, 2, 2);
+    }
+
+    // Parallax far mountains
+    ctx.fillStyle = COLORS.mountainBack;
+    const farOff = -((cam.x * 0.2) % 400);
+    for (let i = -1; i < Math.ceil(W / 400) + 1; i++) {
+      const bx = farOff + i * 400;
+      ctx.beginPath();
+      ctx.moveTo(bx,       H - 120);
+      ctx.lineTo(bx + 200, H - 260);
+      ctx.lineTo(bx + 400, H - 120);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Parallax near mountains
+    ctx.fillStyle = COLORS.mountainFront;
+    const nearOff = -((cam.x * 0.45) % 320);
+    for (let i = -1; i < Math.ceil(W / 320) + 1; i++) {
+      const bx = nearOff + i * 320;
+      ctx.beginPath();
+      ctx.moveTo(bx,       H - 80);
+      ctx.lineTo(bx + 160, H - 200);
+      ctx.lineTo(bx + 320, H - 80);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // --- Pit band ---
+    // Drawn behind platforms. Platforms extend to the bottom of the canvas so
+    // they cover this band wherever they exist — gaps reveal the spiked pit.
+    const bandTop = H - 50;
+    ctx.fillStyle = COLORS.pitBand;
+    ctx.fillRect(0, bandTop, W, H - bandTop);
+    ctx.fillStyle = COLORS.pitSpike;
+    for (let i = 0; i < W + 20; i += 18) {
+      ctx.beginPath();
+      ctx.moveTo(i,      bandTop);
+      ctx.lineTo(i + 9,  bandTop - 18);
+      ctx.lineTo(i + 18, bandTop);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  function drawPlatform(p) {
+    const x = p.x - cam.x, y = p.y - cam.y;
+    if (x + p.w < 0 || x > W) return;
+    if (p.type === 'one-way') {
+      ctx.fillStyle = COLORS.grass;
+      ctx.fillRect(x, y, p.w, 6);
+      ctx.fillStyle = COLORS.grassDark;
+      ctx.fillRect(x, y + 6, p.w, 2);
+      ctx.fillStyle = COLORS.rockDark;
+      for (let dx = 0; dx < p.w; dx += 12) {
+        ctx.fillRect(x + dx, y + 8, 6, 2);
+      }
+      return;
+    }
+    ctx.fillStyle = COLORS.rock;
+    ctx.fillRect(x, y, p.w, p.h);
+    ctx.fillStyle = COLORS.rockDark;
+    ctx.fillRect(x, y + p.h - 6, p.w, 6);
+    ctx.fillStyle = COLORS.grass;
+    ctx.fillRect(x, y, p.w, 6);
+    ctx.fillStyle = COLORS.grassDark;
+    ctx.fillRect(x, y + 6, p.w, 2);
+  }
+
+  function drawGoal() {
+    const x = goal.x - cam.x, y = goal.y - cam.y;
+    ctx.fillStyle = COLORS.goalPole;
+    ctx.fillRect(x, y, goal.w, goal.h);
+    const cellW = 8, cellH = 8;
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 6; col++) {
+        ctx.fillStyle = ((row + col) & 1) ? COLORS.goalFlagA : COLORS.goalFlagB;
+        ctx.fillRect(x + goal.w + col * cellW, y + 4 + row * cellH, cellW, cellH);
+      }
+    }
+  }
+
+  function drawPickup(pk, t) {
+    if (pk.taken) return;
+    const x = pk.x - cam.x, y = pk.y - cam.y;
+    if (x + pk.w < 0 || x > W) return;
+    // Pulse size a bit to draw the eye.
+    const pulse = Math.sin(t * 0.15 + pk.x * 0.01) * 1.5;
+    const w = pk.w + pulse, h = pk.h + pulse;
+    const cx = x + pk.w / 2 - w / 2;
+    const cy = y + pk.h / 2 - h / 2;
+    ctx.fillStyle = COLORS.coinDark;
+    ctx.fillRect(cx, cy, w, h);
+    ctx.fillStyle = COLORS.coin;
+    ctx.fillRect(cx + 2, cy + 2, w - 4, h - 4);
+  }
+
+  function drawEnemy(e) {
+    if (!e.alive) return;
+    const x = e.x - cam.x, y = e.y - cam.y;
+    if (x + e.w < 0 || x > W) return;
+    // Body
+    ctx.fillStyle = COLORS.enemyBody;
+    ctx.fillRect(x, y + 4, e.w, e.h - 6);
+    // Darker belly
+    ctx.fillStyle = COLORS.enemyDark;
+    ctx.fillRect(x, y + e.h - 4, e.w, 4);
+    // Feet
+    ctx.fillStyle = COLORS.enemyFoot;
+    ctx.fillRect(x + 2,         y + e.h - 2, 6, 2);
+    ctx.fillRect(x + e.w - 8,   y + e.h - 2, 6, 2);
+    // Single eye, faces direction of travel
+    ctx.fillStyle = '#FFF';
+    const ex = e.vx > 0 ? x + e.w - 10 : x + 4;
+    ctx.fillRect(ex, y + 6, 6, 6);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(ex + (e.vx > 0 ? 3 : 0), y + 8, 3, 3);
+  }
+
+  function drawPlayer() {
+    // Visual squash/stretch — scale is applied around the feet so the player
+    // "sticks" to the ground when squashing.
+    let sx = 1, sy = 1;
+    if (player.squashT > 0) {
+      const k = player.squashT / 7;
+      sx = 1 + 0.25 * k;
+      sy = 1 - 0.25 * k;
+    } else if (player.stretchT > 0) {
+      const k = player.stretchT / 6;
+      sx = 1 - 0.12 * k;
+      sy = 1 + 0.18 * k;
+    }
+
+    const drawW = player.w * sx;
+    const drawH = player.h * sy;
+    const x = player.x - cam.x + (player.w - drawW) / 2;
+    const y = player.y - cam.y + (player.h - drawH); // pin to feet
+
+    // Pants (lower half)
+    ctx.fillStyle = COLORS.playerPants;
+    ctx.fillRect(x, y + drawH / 2, drawW, drawH / 2);
+    // Shirt (upper half, below helmet)
+    const helmetH = Math.max(6, drawH * 0.25);
+    ctx.fillStyle = COLORS.playerShirt;
+    ctx.fillRect(x, y + helmetH, drawW, drawH / 2 - helmetH);
+    // Helmet
+    ctx.fillStyle = COLORS.playerHelmet;
+    ctx.fillRect(x, y, drawW, helmetH);
+    // Eye
+    ctx.fillStyle = '#000';
+    const eyeX = player.facing > 0 ? x + drawW - 8 : x + 4;
+    ctx.fillRect(eyeX, y + helmetH + 2, 4, 4);
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const px = p.x - cam.x, py = p.y - cam.y;
+      // Fade via alpha isn't worth a setter dance — use size drop-off instead.
+      const s = p.life < 6 ? Math.max(1, p.size - 1) : p.size;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(px, py, s, s);
+    }
+  }
+
+  function drawHud() {
+    ctx.fillStyle = COLORS.hudBg;
+    ctx.fillRect(12, 12, 260, 96);
+    ctx.fillStyle = COLORS.hudText;
+    ctx.font = 'bold 18px "Courier New", monospace';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'start';
+    ctx.fillText('SCORE: ' + score, 24, 20);
+    ctx.fillStyle = '#FFDD00';
+    ctx.fillText('LV ' + (currentLevelIndex + 1) + '/' + LEVELS.length + '  ' + (level.name || ''), 24, 42);
+    ctx.fillStyle = COLORS.hudText;
+    ctx.fillText('A/D move  SPACE jump', 24, 66);
+    ctx.fillText('S+SPACE drop  P pause', 24, 86);
+
+    // Transient level-name banner — shown briefly after load.
+    if (bannerFrames > 0 && GameState.current === 'PLAY') {
+      // Fade in/out via a simple triangle over the banner lifetime.
+      const k = bannerFrames > 90 ? (110 - bannerFrames) / 20
+                                  : bannerFrames / 90;
+      ctx.globalAlpha = Math.max(0, Math.min(1, k));
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0, H / 2 - 50, W, 80);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#FFDD00';
+      ctx.font = 'bold 40px "Courier New", monospace';
+      ctx.fillText(bannerText, W / 2, H / 2 - 32);
+      ctx.textAlign = 'start';
+      ctx.globalAlpha = 1;
+    }
+
+    const s = GameState.current;
+    if (s === 'DEAD' || s === 'WIN' || s === 'PAUSE') {
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 52px "Courier New", monospace';
+      if (s === 'DEAD') {
+        ctx.fillStyle = '#FF5555';
+        ctx.fillText('GAME OVER', W / 2, H / 2 - 50);
+      } else if (s === 'WIN') {
+        ctx.fillStyle = '#FFDD00';
+        ctx.fillText('YOU MADE IT!', W / 2, H / 2 - 50);
+      } else {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText('PAUSED', W / 2, H / 2 - 50);
+      }
+      ctx.fillStyle = '#FFF';
+      ctx.font = 'bold 20px "Courier New", monospace';
+      if (s === 'PAUSE') {
+        ctx.fillText('Press P or ESC to resume', W / 2, H / 2 + 20);
+      } else {
+        ctx.fillText('Final score: ' + score, W / 2, H / 2 + 10);
+        ctx.fillText('Press R or SPACE to play again', W / 2, H / 2 + 42);
+      }
+      ctx.textAlign = 'start';
+    }
+  }
+
+  let renderTick = 0;
+  function render() {
+    // Apply screen shake as a canvas translate for this frame only.
+    let ox = 0, oy = 0;
+    if (shakeFrames > 0) {
+      ox = (Math.random() * 2 - 1) * shakeMag;
+      oy = (Math.random() * 2 - 1) * shakeMag;
+    }
+    ctx.save();
+    ctx.translate(ox, oy);
+
+    drawBackground();
+    if (level.decorations) {
+      for (const d of level.decorations) {
+        const dx = d.x - cam.x, dy = d.y - cam.y;
+        if (dx + d.w < 0 || dx > W) continue;
+        ctx.fillStyle = d.color;
+        ctx.fillRect(dx, dy, d.w, d.h);
+      }
+    }
+    for (const p of platforms) drawPlatform(p);
+    drawGoal();
+    for (const pk of level.pickups) drawPickup(pk, renderTick);
+    for (const e of level.enemies) drawEnemy(e);
+    drawPlayer();
+    drawParticles();
+
+    ctx.restore();
+    drawHud();  // HUD stays fixed (no shake)
+    renderTick++;
+  }
+
+  // ---------- GAME LOOP (fixed 60Hz physics, variable render) ----------
+  const TICK_MS = 1000 / 60;
+  let lastTime = 0;
+  let accumulator = 0;
+
+  function frame(now) {
+    if (!lastTime) lastTime = now;
+    accumulator += now - lastTime;
+    lastTime = now;
+
+    if (accumulator > TICK_MS * 10) accumulator = TICK_MS * 10;
+
+    while (accumulator >= TICK_MS) {
+      update();
+      updateCamera();  // camera in the fixed step so it's frame-rate-independent
+      for (const k in pressed) delete pressed[k];
+      accumulator -= TICK_MS;
+    }
+
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  GameState.transitionTo('PLAY');
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

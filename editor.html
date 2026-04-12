@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Level Editor — Keen Platformer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%; font-family: 'Courier New', monospace;
+    background: #1a1a2e; color: #e0e0e0; overflow: hidden;
+  }
+
+  #toolbar {
+    display: flex; align-items: center; gap: 4px; padding: 6px 10px;
+    background: #16213e; border-bottom: 2px solid #0f3460;
+    flex-wrap: wrap; user-select: none;
+  }
+  .tool-group {
+    display: flex; gap: 2px; padding: 0 6px;
+    border-right: 1px solid #0f3460;
+  }
+  .tool-group:last-child { border-right: none; }
+
+  .tool-btn {
+    padding: 5px 9px; background: #1a1a2e; border: 1px solid #0f3460;
+    color: #ccc; cursor: pointer; font-family: inherit; font-size: 12px;
+    border-radius: 3px; white-space: nowrap;
+  }
+  .tool-btn:hover { background: #0f3460; color: #fff; }
+  .tool-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+  .tool-btn.action { background: #0f3460; }
+  .tool-btn.action:hover { background: #533483; }
+
+  #main { display: flex; height: calc(100% - 42px); }
+
+  #editor-wrap { flex: 1; position: relative; overflow: hidden; }
+  canvas#editor { position: absolute; top: 0; left: 0; }
+
+  #props {
+    width: 270px; background: #16213e; border-left: 2px solid #0f3460;
+    overflow-y: auto; padding: 10px; font-size: 13px;
+  }
+  #props h3 { color: #e94560; margin-bottom: 8px; font-size: 14px; }
+
+  .prop-row { display: flex; align-items: center; margin-bottom: 6px; }
+  .prop-row label { width: 65px; font-size: 12px; color: #aaa; flex-shrink: 0; }
+  .prop-row input, .prop-row select {
+    flex: 1; padding: 4px 6px; background: #1a1a2e; border: 1px solid #0f3460;
+    color: #e0e0e0; font-family: inherit; font-size: 12px; border-radius: 3px;
+  }
+  .prop-section {
+    margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #0f3460;
+  }
+
+  #coords {
+    position: absolute; bottom: 8px; left: 8px;
+    background: rgba(0,0,0,0.7); color: #aaa; padding: 4px 8px;
+    font-size: 12px; border-radius: 3px; pointer-events: none;
+  }
+
+  #overlay {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.8); z-index: 1000;
+    justify-content: center; align-items: center;
+  }
+  #overlay.show { display: flex; }
+  #overlay-box {
+    background: #16213e; padding: 24px; border-radius: 8px;
+    max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto;
+    border: 2px solid #0f3460;
+  }
+  #overlay-box h2 { color: #e94560; margin-bottom: 12px; }
+  #overlay-box p { margin-bottom: 8px; font-size: 13px; line-height: 1.5; }
+  #overlay-box kbd {
+    background: #1a1a2e; padding: 2px 6px; border-radius: 3px;
+    border: 1px solid #0f3460; font-size: 12px;
+  }
+  #overlay-box textarea {
+    width: 100%; min-height: 280px; background: #1a1a2e; color: #e0e0e0;
+    border: 1px solid #0f3460; font-family: 'Courier New', monospace;
+    font-size: 12px; padding: 8px; resize: vertical;
+  }
+  #overlay-box hr { border-color: #0f3460; margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <div class="tool-group">
+    <label style="color:#aaa;font-size:12px;padding:0 4px;">Level</label>
+    <select id="level-picker" class="tool-btn" style="padding:4px 6px;"></select>
+    <button class="tool-btn action" id="btn-save-all" title="Save levels.js (Ctrl+S)">💾 Save</button>
+    <button class="tool-btn action" id="btn-play" title="Play this level (Ctrl+P)">▶ Play</button>
+  </div>
+  <div class="tool-group">
+    <button class="tool-btn active" data-tool="select" title="Select / Move (V)">▨ Select</button>
+    <button class="tool-btn" data-tool="platform-solid" title="Solid platform (S)">■ Solid</button>
+    <button class="tool-btn" data-tool="platform-oneway" title="One-way platform (O)">▬ One-Way</button>
+    <button class="tool-btn" data-tool="pickup" title="Coin (C)">◆ Coin</button>
+    <button class="tool-btn" data-tool="enemy" title="Enemy (E)">☠ Enemy</button>
+    <button class="tool-btn" data-tool="spawn" title="Set spawn (W)">⚑ Spawn</button>
+    <button class="tool-btn" data-tool="goal" title="Set goal (G)">⚐ Goal</button>
+    <button class="tool-btn" data-tool="decoration" title="Decoration (D)">❀ Decor</button>
+    <button class="tool-btn" data-tool="eraser" title="Eraser (X)">✕ Erase</button>
+  </div>
+  <div class="tool-group">
+    <button class="tool-btn action" id="btn-undo" title="Undo (Ctrl+Z)">↩ Undo</button>
+    <button class="tool-btn action" id="btn-redo" title="Redo (Ctrl+Y)">↪ Redo</button>
+  </div>
+  <div class="tool-group">
+    <button class="tool-btn action" id="btn-grid" title="Cycle grid (Ctrl+G)">▦ Grid: 20</button>
+    <button class="tool-btn action" id="btn-jump-ruler" title="Jump Ruler — show reach from cursor (J)">📏 Jump</button>
+  </div>
+  <div class="tool-group">
+    <button class="tool-btn action" id="btn-new" title="New level">📄 New</button>
+    <button class="tool-btn action" id="btn-import" title="Import JSON">📥 Import</button>
+    <button class="tool-btn action" id="btn-export" title="Export JSON (Ctrl+E)">📤 Export</button>
+    <button class="tool-btn action" id="btn-help" title="Help (?)">? Help</button>
+  </div>
+</div>
+
+<div id="main">
+  <div id="editor-wrap">
+    <canvas id="editor"></canvas>
+    <div id="coords">0, 0</div>
+  </div>
+  <div id="props">
+    <div class="prop-section">
+      <h3>LEVEL SETTINGS</h3>
+      <div class="prop-row"><label>Name</label><input id="lv-name" value="NEW LEVEL"></div>
+      <div class="prop-row"><label>ID</label><input id="lv-id" value="new_level"></div>
+      <div class="prop-row"><label>End X</label><input id="lv-endx" type="number" value="4200"></div>
+      <div class="prop-row"><label>Death Y</label><input id="lv-deathy" type="number" value="600"></div>
+    </div>
+    <div id="selection-props">
+      <h3>SELECTION</h3>
+      <p style="color:#666; font-size:12px;">Nothing selected</p>
+    </div>
+  </div>
+</div>
+
+<div id="overlay">
+  <div id="overlay-box"></div>
+</div>
+
+<script src="levels.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  // ---- COLORS (match game palette) ----
+  const C = {
+    sky: '#5FCDE4', star: '#FFF27A',
+    mountainBack: '#8E3F8E', mountainFront: '#5A255A',
+    rock: '#AA44AA', rockDark: '#661C66',
+    grass: '#55EE55', grassDark: '#2A9A2A',
+    playerShirt: '#EC2E2E', playerPants: '#2A9A2A', playerHelmet: '#F5F5F5',
+    goalPole: '#DDDDDD', goalFlagA: '#FFDD00', goalFlagB: '#EC2E2E',
+    coin: '#FFDD00', coinDark: '#C89600',
+    enemyBody: '#22AA22', enemyDark: '#0C5F0C', enemyFoot: '#FF8844',
+    pitBand: '#2A0044', pitSpike: '#1A0033',
+    sel: '#e94560', guide: 'rgba(255,255,255,0.07)',
+  };
+
+  // ---- CANVAS ----
+  const canvas = document.getElementById('editor');
+  const ctx = canvas.getContext('2d');
+  const wrap = document.getElementById('editor-wrap');
+
+  function resize() {
+    canvas.width = wrap.clientWidth;
+    canvas.height = wrap.clientHeight;
+    render();
+  }
+  window.addEventListener('resize', resize);
+
+  // ---- STATE ----
+  let tool = 'select';
+  let gridSize = 20;
+  let cam = { x: -120, y: -60 };
+  let zoom = 1;
+  let selected = null; // { kind, index? }
+  let jumpRuler = false;
+  let mouseWorld = { x: 0, y: 0 };
+
+  // Physics constants — keep in sync with index.html TUNING block.
+  const PHYS = { GRAVITY: 0.6, JUMP_V: -11.5, MAX_RUN: 4.6 };
+
+  // ---- UNDO ----
+  let undoStack = [], redoStack = [];
+  function pushUndo() {
+    undoStack.push(JSON.stringify(lvl));
+    if (undoStack.length > 60) undoStack.shift();
+    redoStack = [];
+  }
+  function undo() {
+    if (!undoStack.length) return;
+    redoStack.push(JSON.stringify(lvl));
+    lvl = JSON.parse(undoStack.pop());
+    selected = null; syncInputs(); updateProps(); render();
+  }
+  function redo() {
+    if (!redoStack.length) return;
+    undoStack.push(JSON.stringify(lvl));
+    lvl = JSON.parse(redoStack.pop());
+    selected = null; syncInputs(); updateProps(); render();
+  }
+
+  // ---- LEVEL DATA ----
+  function emptyLevel() {
+    return {
+      id: 'new_level', name: 'NEW LEVEL',
+      spawn: { x: 80, y: 300 },
+      goal: { x: 2000, y: 340, w: 14, h: 120 },
+      endX: 4200, deathY: 600, theme: {},
+      platforms: [{ x: 0, y: 460, w: 900, h: 200, type: 'solid' }],
+      pickups: [], enemies: [], decorations: [],
+    };
+  }
+
+  // allLevels mirrors window.LEVELS; `lvl` is a live working copy of the
+  // level at currentLevelIndex. commitCurrent() flushes `lvl` back into
+  // allLevels before switching levels or saving.
+  let allLevels = (window.LEVELS && window.LEVELS.length)
+    ? JSON.parse(JSON.stringify(window.LEVELS))
+    : [emptyLevel()];
+  let currentLevelIndex = 0;
+  let lvl = JSON.parse(JSON.stringify(allLevels[0]));
+
+  function commitCurrent() {
+    if (currentLevelIndex >= 0 && currentLevelIndex < allLevels.length) {
+      allLevels[currentLevelIndex] = JSON.parse(JSON.stringify(lvl));
+    }
+  }
+
+  function loadLevelAt(index) {
+    currentLevelIndex = index;
+    lvl = JSON.parse(JSON.stringify(allLevels[index]));
+    selected = null;
+    undoStack = []; redoStack = [];
+    cam = { x: -120, y: -60 }; zoom = 1;
+    syncInputs(); updateProps(); render();
+  }
+
+  function rebuildLevelPicker() {
+    const sel = document.getElementById('level-picker');
+    sel.innerHTML = '';
+    allLevels.forEach((lv, i) => {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = `${i + 1}. ${lv.name}`;
+      sel.appendChild(opt);
+    });
+    const addOpt = document.createElement('option');
+    addOpt.value = 'new';
+    addOpt.textContent = '+ New Level';
+    sel.appendChild(addOpt);
+    sel.value = String(currentLevelIndex);
+  }
+
+  // ---- HELPERS ----
+  function s2w(sx, sy) {
+    return { x: sx / zoom + cam.x, y: sy / zoom + cam.y };
+  }
+  function w2s(wx, wy) {
+    return { x: (wx - cam.x) * zoom, y: (wy - cam.y) * zoom };
+  }
+  function snap(v) {
+    return gridSize > 0 ? Math.round(v / gridSize) * gridSize : v;
+  }
+
+  function getObj() {
+    if (!selected) return null;
+    const s = selected;
+    if (s.kind === 'spawn') return lvl.spawn;
+    if (s.kind === 'goal') return lvl.goal;
+    if (s.kind === 'platform') return lvl.platforms[s.index];
+    if (s.kind === 'pickup') return lvl.pickups[s.index];
+    if (s.kind === 'enemy') return lvl.enemies[s.index];
+    if (s.kind === 'decoration') return lvl.decorations[s.index];
+    return null;
+  }
+
+  function objBounds(sel) {
+    const o = sel.kind === 'spawn' ? lvl.spawn
+            : sel.kind === 'goal' ? lvl.goal
+            : sel.kind === 'platform' ? lvl.platforms[sel.index]
+            : sel.kind === 'pickup' ? lvl.pickups[sel.index]
+            : sel.kind === 'enemy' ? lvl.enemies[sel.index]
+            : sel.kind === 'decoration' ? lvl.decorations[sel.index]
+            : null;
+    if (!o) return null;
+    if (sel.kind === 'spawn') return { x: o.x, y: o.y, w: 26, h: 40 };
+    return { x: o.x, y: o.y, w: o.w, h: o.h };
+  }
+
+  // ---- HIT TEST (reverse draw order) ----
+  function hitTest(wx, wy) {
+    // Spawn
+    const sp = lvl.spawn;
+    if (wx >= sp.x && wx <= sp.x + 26 && wy >= sp.y && wy <= sp.y + 40)
+      return { kind: 'spawn' };
+    // Goal (include flag area)
+    const g = lvl.goal;
+    if (wx >= g.x && wx <= g.x + g.w + 48 && wy >= g.y && wy <= g.y + g.h)
+      return { kind: 'goal' };
+    // Enemies
+    for (let i = lvl.enemies.length - 1; i >= 0; i--) {
+      const e = lvl.enemies[i];
+      if (wx >= e.x && wx <= e.x + e.w && wy >= e.y && wy <= e.y + e.h)
+        return { kind: 'enemy', index: i };
+    }
+    // Pickups
+    for (let i = lvl.pickups.length - 1; i >= 0; i--) {
+      const p = lvl.pickups[i];
+      if (wx >= p.x && wx <= p.x + p.w && wy >= p.y && wy <= p.y + p.h)
+        return { kind: 'pickup', index: i };
+    }
+    // Decorations
+    for (let i = lvl.decorations.length - 1; i >= 0; i--) {
+      const d = lvl.decorations[i];
+      if (wx >= d.x && wx <= d.x + d.w && wy >= d.y && wy <= d.y + d.h)
+        return { kind: 'decoration', index: i };
+    }
+    // Platforms
+    for (let i = lvl.platforms.length - 1; i >= 0; i--) {
+      const p = lvl.platforms[i];
+      if (wx >= p.x && wx <= p.x + p.w && wy >= p.y && wy <= p.y + p.h)
+        return { kind: 'platform', index: i };
+    }
+    return null;
+  }
+
+  // ---- RESIZE HANDLES ----
+  function getHandle(obj, wx, wy) {
+    if (!obj || !obj.w) return null;
+    const m = 8 / zoom;
+    const r = obj.x + obj.w, b = obj.y + obj.h;
+    if (Math.abs(wx - r) < m && Math.abs(wy - b) < m) return 'se';
+    if (Math.abs(wx - obj.x) < m && Math.abs(wy - b) < m) return 'sw';
+    if (Math.abs(wx - r) < m && Math.abs(wy - obj.y) < m) return 'ne';
+    if (Math.abs(wx - obj.x) < m && Math.abs(wy - obj.y) < m) return 'nw';
+    if (Math.abs(wx - r) < m && wy > obj.y && wy < b) return 'e';
+    if (Math.abs(wx - obj.x) < m && wy > obj.y && wy < b) return 'w';
+    if (Math.abs(wy - b) < m && wx > obj.x && wx < r) return 's';
+    if (Math.abs(wy - obj.y) < m && wx > obj.x && wx < r) return 'n';
+    return null;
+  }
+
+  // ---- INTERACTION STATE ----
+  let dragging = false, dragStart = {}, dragObjOrig = null, dragSaved = false;
+  let panning = false, panStart = {}, panCamOrig = {};
+  let creating = false, createStart = {};
+  let resizing = false, resizeH = null, resizeOrig = null;
+  let spaceHeld = false;
+
+  function deleteSelected() {
+    if (!selected || selected.kind === 'spawn' || selected.kind === 'goal') return;
+    pushUndo();
+    const arr = arrFor(selected.kind);
+    if (arr) arr.splice(selected.index, 1);
+    selected = null; updateProps(); render();
+  }
+
+  function arrFor(kind) {
+    if (kind === 'platform') return lvl.platforms;
+    if (kind === 'pickup') return lvl.pickups;
+    if (kind === 'enemy') return lvl.enemies;
+    if (kind === 'decoration') return lvl.decorations;
+    return null;
+  }
+
+  // ---- MOUSE EVENTS ----
+  canvas.addEventListener('mousedown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const { x: wx, y: wy } = s2w(sx, sy);
+
+    // Pan
+    if (e.button === 1 || (e.button === 0 && spaceHeld)) {
+      panning = true;
+      panStart = { x: e.clientX, y: e.clientY };
+      panCamOrig = { ...cam };
+      e.preventDefault();
+      return;
+    }
+    if (e.button !== 0) return;
+
+    if (tool === 'select') {
+      // Check resize handle on current selection
+      const obj = getObj();
+      if (obj && selected.kind !== 'spawn' && selected.kind !== 'pickup') {
+        const h = getHandle(obj, wx, wy);
+        if (h) {
+          pushUndo();
+          resizing = true; resizeH = h;
+          resizeOrig = { x: obj.x, y: obj.y, w: obj.w, h: obj.h };
+          dragStart = { x: wx, y: wy };
+          return;
+        }
+      }
+      const hit = hitTest(wx, wy);
+      if (hit) {
+        selected = hit;
+        const o = getObj();
+        dragging = true; dragSaved = false;
+        dragStart = { x: wx, y: wy };
+        dragObjOrig = { x: o.x, y: o.y };
+      } else {
+        selected = null;
+      }
+      updateProps(); render();
+
+    } else if (tool === 'platform-solid' || tool === 'platform-oneway') {
+      creating = true;
+      createStart = { x: snap(wx), y: snap(wy) };
+
+    } else if (tool === 'pickup') {
+      pushUndo();
+      lvl.pickups.push({ x: snap(wx), y: snap(wy), w: 14, h: 14, taken: false });
+      selected = { kind: 'pickup', index: lvl.pickups.length - 1 };
+      updateProps(); render();
+
+    } else if (tool === 'enemy') {
+      pushUndo();
+      const ex = snap(wx), ey = snap(wy);
+      lvl.enemies.push({
+        x: ex, y: ey, w: 26, h: 26,
+        vx: 0.8, minX: ex - 200, maxX: ex + 200, alive: true,
+      });
+      selected = { kind: 'enemy', index: lvl.enemies.length - 1 };
+      updateProps(); render();
+
+    } else if (tool === 'spawn') {
+      pushUndo();
+      lvl.spawn.x = snap(wx); lvl.spawn.y = snap(wy);
+      selected = { kind: 'spawn' };
+      updateProps(); render();
+
+    } else if (tool === 'goal') {
+      pushUndo();
+      lvl.goal.x = snap(wx); lvl.goal.y = snap(wy);
+      selected = { kind: 'goal' };
+      updateProps(); render();
+
+    } else if (tool === 'decoration') {
+      pushUndo();
+      lvl.decorations.push({ x: snap(wx), y: snap(wy), w: 18, h: 20, color: '#55EE55' });
+      selected = { kind: 'decoration', index: lvl.decorations.length - 1 };
+      updateProps(); render();
+
+    } else if (tool === 'eraser') {
+      const hit = hitTest(wx, wy);
+      if (hit && hit.kind !== 'spawn' && hit.kind !== 'goal') {
+        pushUndo();
+        const arr = arrFor(hit.kind);
+        if (arr) arr.splice(hit.index, 1);
+        selected = null; updateProps(); render();
+      }
+    }
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const { x: wx, y: wy } = s2w(sx, sy);
+    mouseWorld.x = wx; mouseWorld.y = wy;
+
+    document.getElementById('coords').textContent =
+      `${Math.round(wx)}, ${Math.round(wy)}  ·  Zoom ${Math.round(zoom * 100)}%`;
+
+    // Keep the jump ruler glued to the cursor even when idle.
+    if (jumpRuler && !dragging && !panning && !resizing && !creating) render();
+
+    // Cursor
+    if (spaceHeld || panning) {
+      canvas.style.cursor = panning ? 'grabbing' : 'grab';
+    } else if (tool === 'select') {
+      const obj = getObj();
+      if (resizing) {
+        canvas.style.cursor = 'crosshair';
+      } else if (obj && selected.kind !== 'spawn' && selected.kind !== 'pickup') {
+        const h = getHandle(obj, wx, wy);
+        if (h) {
+          const cur = { e:'ew-resize', w:'ew-resize', n:'ns-resize', s:'ns-resize',
+                        se:'nwse-resize', nw:'nwse-resize', ne:'nesw-resize', sw:'nesw-resize' };
+          canvas.style.cursor = cur[h];
+        } else {
+          canvas.style.cursor = hitTest(wx, wy) ? 'move' : 'default';
+        }
+      } else {
+        canvas.style.cursor = hitTest(wx, wy) ? 'move' : 'default';
+      }
+    } else if (tool === 'eraser') {
+      canvas.style.cursor = hitTest(wx, wy) ? 'pointer' : 'default';
+    } else {
+      canvas.style.cursor = 'crosshair';
+    }
+
+    if (panning) {
+      cam.x = panCamOrig.x - (e.clientX - panStart.x) / zoom;
+      cam.y = panCamOrig.y - (e.clientY - panStart.y) / zoom;
+      render(); return;
+    }
+
+    if (resizing) {
+      const dx = snap(wx) - snap(dragStart.x);
+      const dy = snap(wy) - snap(dragStart.y);
+      const obj = getObj(); if (!obj) return;
+      const o = resizeOrig;
+      if (resizeH.includes('e')) obj.w = Math.max(20, o.w + dx);
+      if (resizeH.includes('w')) { obj.x = o.x + dx; obj.w = Math.max(20, o.w - dx); }
+      if (resizeH.includes('s')) obj.h = Math.max(20, o.h + dy);
+      if (resizeH.includes('n')) { obj.y = o.y + dy; obj.h = Math.max(20, o.h - dy); }
+      updateProps(); render(); return;
+    }
+
+    if (dragging && selected) {
+      if (!dragSaved) { pushUndo(); dragSaved = true; }
+      const obj = getObj();
+      if (obj) {
+        obj.x = snap(dragObjOrig.x + (wx - dragStart.x));
+        obj.y = snap(dragObjOrig.y + (wy - dragStart.y));
+        updateProps();
+      }
+      render(); return;
+    }
+
+    if (creating) {
+      render();
+      const x1 = createStart.x, y1 = createStart.y;
+      const x2 = snap(wx), y2 = snap(wy);
+      const rx = Math.min(x1, x2), ry = Math.min(y1, y2);
+      const rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
+      const sp = w2s(rx, ry);
+      ctx.strokeStyle = C.sel;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 3]);
+      ctx.strokeRect(sp.x, sp.y, rw * zoom, rh * zoom);
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#fff';
+      ctx.font = '12px "Courier New"';
+      ctx.fillText(`${rw} × ${rh}`, sp.x + 4, sp.y - 6);
+    }
+  });
+
+  canvas.addEventListener('mouseup', (e) => {
+    if (panning) { panning = false; return; }
+    if (resizing) { resizing = false; resizeH = null; render(); return; }
+
+    if (creating) {
+      creating = false;
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+      const { x: wx, y: wy } = s2w(sx, sy);
+      const x1 = createStart.x, y1 = createStart.y;
+      const x2 = snap(wx), y2 = snap(wy);
+      const rx = Math.min(x1, x2), ry = Math.min(y1, y2);
+      const rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
+      if (rw >= 10 && rh >= 10) {
+        pushUndo();
+        const type = tool === 'platform-solid' ? 'solid' : 'one-way';
+        lvl.platforms.push({ x: rx, y: ry, w: rw, h: rh, type });
+        selected = { kind: 'platform', index: lvl.platforms.length - 1 };
+        updateProps();
+      }
+      render(); return;
+    }
+
+    dragging = false;
+  });
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const before = s2w(mx, my);
+    if (e.deltaY < 0) zoom = Math.min(4, zoom * 1.12);
+    else zoom = Math.max(0.12, zoom / 1.12);
+    cam.x = before.x - mx / zoom;
+    cam.y = before.y - my / zoom;
+    render();
+  }, { passive: false });
+
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // ---- KEYBOARD ----
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && document.activeElement?.tagName !== 'INPUT') {
+      spaceHeld = true; e.preventDefault();
+    }
+    if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'SELECT'
+      || document.activeElement?.tagName === 'TEXTAREA') return;
+
+    const toolMap = {
+      KeyV: 'select', KeyS: 'platform-solid', KeyO: 'platform-oneway',
+      KeyC: 'pickup', KeyE: 'enemy', KeyW: 'spawn', KeyG: 'goal',
+      KeyD: 'decoration', KeyX: 'eraser',
+    };
+    if (!e.ctrlKey && !e.metaKey && toolMap[e.code]) { setTool(toolMap[e.code]); return; }
+
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') { e.preventDefault(); undo(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') { e.preventDefault(); redo(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyE') { e.preventDefault(); exportLevel(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyG') { e.preventDefault(); cycleGrid(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') { e.preventDefault(); saveLevelsFile(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyP') { e.preventDefault(); playCurrentLevel(); return; }
+
+    if ((e.code === 'Delete' || e.code === 'Backspace') && selected) {
+      e.preventDefault(); deleteSelected(); return;
+    }
+
+    // Nudge with arrows
+    if (selected && e.code.startsWith('Arrow')) {
+      const obj = getObj(); if (!obj) return;
+      const step = gridSize || 10;
+      pushUndo();
+      if (e.code === 'ArrowLeft')  obj.x -= step;
+      if (e.code === 'ArrowRight') obj.x += step;
+      if (e.code === 'ArrowUp')    obj.y -= step;
+      if (e.code === 'ArrowDown')  obj.y += step;
+      e.preventDefault(); updateProps(); render();
+    }
+
+    if (e.code === 'KeyJ' && !e.ctrlKey && !e.metaKey) { toggleJumpRuler(); return; }
+    if (e.code === 'Slash' && e.shiftKey) showHelp();
+  });
+
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') spaceHeld = false;
+  });
+
+  // ---- TOOL BUTTONS ----
+  function setTool(t) {
+    tool = t;
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(b =>
+      b.classList.toggle('active', b.dataset.tool === t));
+  }
+  document.querySelectorAll('.tool-btn[data-tool]').forEach(b =>
+    b.addEventListener('click', () => setTool(b.dataset.tool)));
+
+  // ---- ACTION BUTTONS ----
+  document.getElementById('btn-undo').addEventListener('click', undo);
+  document.getElementById('btn-redo').addEventListener('click', redo);
+  document.getElementById('btn-grid').addEventListener('click', cycleGrid);
+  document.getElementById('btn-jump-ruler').addEventListener('click', toggleJumpRuler);
+
+  function toggleJumpRuler() {
+    jumpRuler = !jumpRuler;
+    document.getElementById('btn-jump-ruler').classList.toggle('active', jumpRuler);
+    render();
+  }
+  document.getElementById('btn-new').addEventListener('click', () => {
+    commitCurrent();
+    allLevels.push(emptyLevel());
+    currentLevelIndex = allLevels.length - 1;
+    loadLevelAt(currentLevelIndex);
+    rebuildLevelPicker();
+  });
+  document.getElementById('btn-import').addEventListener('click', importLevel);
+  document.getElementById('btn-export').addEventListener('click', exportLevel);
+  document.getElementById('btn-save-all').addEventListener('click', saveLevelsFile);
+  document.getElementById('btn-play').addEventListener('click', playCurrentLevel);
+  document.getElementById('btn-help').addEventListener('click', showHelp);
+
+  // Save, then open the game at the current level in a new tab.
+  async function playCurrentLevel() {
+    await saveLevelsFile();
+    const url = `/?level=${currentLevelIndex + 1}`;
+    window.open(url, 'sidescroller-playtest');
+  }
+
+  document.getElementById('level-picker').addEventListener('change', (e) => {
+    const v = e.target.value;
+    commitCurrent();
+    if (v === 'new') {
+      allLevels.push(emptyLevel());
+      currentLevelIndex = allLevels.length - 1;
+    } else {
+      currentLevelIndex = +v;
+    }
+    loadLevelAt(currentLevelIndex);
+    rebuildLevelPicker();
+  });
+
+  function cycleGrid() {
+    const sizes = [0, 10, 20, 40];
+    gridSize = sizes[(sizes.indexOf(gridSize) + 1) % sizes.length];
+    document.getElementById('btn-grid').textContent =
+      gridSize ? `▦ Grid: ${gridSize}` : '▦ Grid: Off';
+    render();
+  }
+
+  // ---- LEVEL INPUTS ----
+  function syncInputs() {
+    document.getElementById('lv-name').value = lvl.name;
+    document.getElementById('lv-id').value = lvl.id;
+    document.getElementById('lv-endx').value = lvl.endX;
+    document.getElementById('lv-deathy').value = lvl.deathY;
+  }
+  document.getElementById('lv-name').addEventListener('change', (e) => {
+    lvl.name = e.target.value;
+    commitCurrent();
+    rebuildLevelPicker();
+  });
+  document.getElementById('lv-id').addEventListener('change', (e) => { lvl.id = e.target.value; });
+  document.getElementById('lv-endx').addEventListener('change', (e) => { lvl.endX = +e.target.value; render(); });
+  document.getElementById('lv-deathy').addEventListener('change', (e) => { lvl.deathY = +e.target.value; render(); });
+
+  // ---- PROPERTIES PANEL ----
+  function updateProps() {
+    const div = document.getElementById('selection-props');
+    if (!selected) {
+      div.innerHTML = '<h3>SELECTION</h3><p style="color:#666;font-size:12px;">Nothing selected</p>';
+      return;
+    }
+    const obj = getObj();
+    if (!obj) { selected = null; updateProps(); return; }
+
+    const row = (lbl, id, val, type = 'number') =>
+      `<div class="prop-row"><label>${lbl}</label><input id="prop-${id}" type="${type}" value="${val}"></div>`;
+
+    let h = `<h3>${selected.kind.toUpperCase()}</h3>`;
+    h += row('X', 'x', Math.round(obj.x));
+    h += row('Y', 'y', Math.round(obj.y));
+
+    if (selected.kind !== 'spawn' && selected.kind !== 'pickup') {
+      h += row('Width', 'w', Math.round(obj.w));
+      h += row('Height', 'h', Math.round(obj.h));
+    }
+
+    if (selected.kind === 'platform') {
+      h += `<div class="prop-row"><label>Type</label>
+        <select id="prop-type">
+          <option value="solid" ${obj.type === 'solid' ? 'selected' : ''}>Solid</option>
+          <option value="one-way" ${obj.type === 'one-way' ? 'selected' : ''}>One-Way</option>
+        </select></div>`;
+    }
+
+    if (selected.kind === 'enemy') {
+      h += row('Speed', 'vx', obj.vx);
+      h += row('Min X', 'minX', Math.round(obj.minX));
+      h += row('Max X', 'maxX', Math.round(obj.maxX));
+    }
+
+    if (selected.kind === 'decoration') {
+      h += `<div class="prop-row"><label>Color</label>
+        <input id="prop-color" type="color" value="${obj.color}"></div>`;
+    }
+
+    if (selected.kind !== 'spawn' && selected.kind !== 'goal') {
+      h += `<button class="tool-btn action" id="prop-dupe" style="margin-top:8px;width:100%;">📋 Duplicate</button>`;
+      h += `<button class="tool-btn action" id="prop-del" style="margin-top:4px;width:100%;">🗑 Delete</button>`;
+    }
+
+    div.innerHTML = h;
+
+    // Bind
+    const bind = (id, prop, xform) => {
+      const el = document.getElementById(`prop-${id}`);
+      if (el) el.addEventListener('change', (ev) => {
+        pushUndo();
+        obj[prop] = xform ? xform(ev.target.value) : +ev.target.value;
+        render();
+      });
+    };
+    bind('x', 'x'); bind('y', 'y'); bind('w', 'w'); bind('h', 'h');
+    bind('vx', 'vx', v => parseFloat(v));
+    bind('minX', 'minX'); bind('maxX', 'maxX');
+    bind('type', 'type', v => v);
+    bind('color', 'color', v => v);
+
+    const del = document.getElementById('prop-del');
+    if (del) del.addEventListener('click', deleteSelected);
+
+    const dupe = document.getElementById('prop-dupe');
+    if (dupe) dupe.addEventListener('click', () => {
+      pushUndo();
+      const copy = JSON.parse(JSON.stringify(obj));
+      copy.x += gridSize || 20; copy.y += gridSize || 20;
+      const arr = arrFor(selected.kind);
+      if (arr) {
+        arr.push(copy);
+        selected = { kind: selected.kind, index: arr.length - 1 };
+        updateProps(); render();
+      }
+    });
+  }
+
+  // ---- SERIALIZER (full levels.js) ----
+  function formatLevel(lv) {
+    const lines = [];
+    lines.push('  {');
+    lines.push(`    id: '${lv.id}',`);
+    lines.push(`    name: '${lv.name}',`);
+    lines.push(`    spawn: { x: ${lv.spawn.x}, y: ${lv.spawn.y} },`);
+    lines.push(`    goal: { x: ${lv.goal.x}, y: ${lv.goal.y}, w: ${lv.goal.w}, h: ${lv.goal.h} },`);
+    lines.push(`    endX: ${lv.endX},`);
+    lines.push(`    deathY: ${lv.deathY},`);
+    lines.push(`    theme: {},`);
+    lines.push('    platforms: [');
+    for (const p of lv.platforms) {
+      lines.push(`      { x: ${p.x}, y: ${p.y}, w: ${p.w}, h: ${p.h}, type: '${p.type}' },`);
+    }
+    lines.push('    ],');
+    lines.push('    pickups: [');
+    for (const p of lv.pickups) {
+      lines.push(`      { x: ${p.x}, y: ${p.y}, w: ${p.w}, h: ${p.h}, taken: false },`);
+    }
+    lines.push('    ],');
+    lines.push('    enemies: [');
+    for (const e of lv.enemies) {
+      lines.push(`      { x: ${e.x}, y: ${e.y}, w: ${e.w}, h: ${e.h}, vx: ${e.vx}, minX: ${e.minX}, maxX: ${e.maxX}, alive: true },`);
+    }
+    lines.push('    ],');
+    lines.push('    decorations: [');
+    for (const d of lv.decorations) {
+      lines.push(`      { x: ${d.x}, y: ${d.y}, w: ${d.w}, h: ${d.h}, color: '${d.color}' },`);
+    }
+    lines.push('    ],');
+    lines.push('  },');
+    return lines.join('\n');
+  }
+
+  function formatLevels(levels) {
+    const header =
+      '// Shared level data for index.html (the game) and editor.html (the level editor).\n' +
+      '// Loaded via <script src="levels.js"><\/script> — exposes window.LEVELS.\n' +
+      '// The editor\'s "Save levels.js" button rewrites this file.\n' +
+      'window.LEVELS = [\n';
+    const body = levels.map(formatLevel).join('\n\n');
+    return header + body + '\n];\n';
+  }
+
+  async function saveLevelsFile() {
+    commitCurrent();
+    const text = formatLevels(allLevels);
+
+    // 1) Dev server: POST to /api/save-levels writes levels.js directly.
+    if (location.protocol === 'http:' || location.protocol === 'https:') {
+      try {
+        const r = await fetch('/api/save-levels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/javascript' },
+          body: text,
+        });
+        if (r.ok) { flashSave('Saved'); return; }
+      } catch (_) { /* fall through */ }
+    }
+
+    // 2) File System Access API (Chromium-based browsers)
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: 'levels.js',
+          types: [{ description: 'JavaScript', accept: { 'text/javascript': ['.js'] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(text);
+        await writable.close();
+        flashSave('Saved');
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        console.warn('FS Access API failed, falling back to download:', err);
+      }
+    }
+
+    // 3) Plain blob download
+    const blob = new Blob([text], { type: 'text/javascript' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'levels.js';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    flashSave('Downloaded');
+  }
+
+  function flashSave(label) {
+    const btn = document.getElementById('btn-save-all');
+    const orig = btn.textContent;
+    btn.textContent = `✓ ${label}`;
+    setTimeout(() => { btn.textContent = orig; }, 1200);
+  }
+
+  // ---- IMPORT / EXPORT ----
+  function exportLevel() {
+    const out = {
+      id: lvl.id, name: lvl.name,
+      spawn: { x: lvl.spawn.x, y: lvl.spawn.y },
+      goal: { x: lvl.goal.x, y: lvl.goal.y, w: lvl.goal.w, h: lvl.goal.h },
+      endX: lvl.endX, deathY: lvl.deathY, theme: {},
+      platforms: lvl.platforms.map(p => ({ x: p.x, y: p.y, w: p.w, h: p.h, type: p.type })),
+      pickups: lvl.pickups.map(p => ({ x: p.x, y: p.y, w: p.w, h: p.h, taken: false })),
+      enemies: lvl.enemies.map(e => ({
+        x: e.x, y: e.y, w: e.w, h: e.h, vx: e.vx, minX: e.minX, maxX: e.maxX, alive: true,
+      })),
+      decorations: lvl.decorations.map(d => ({ x: d.x, y: d.y, w: d.w, h: d.h, color: d.color })),
+    };
+    const json = JSON.stringify(out, null, 2);
+    navigator.clipboard.writeText(json).catch(() => {});
+
+    const box = document.getElementById('overlay-box');
+    box.innerHTML = `
+      <h2>Exported Level JSON</h2>
+      <p style="color:#aaa;font-size:12px;">Copied to clipboard. Paste into the LEVELS array in index.html.</p>
+      <textarea readonly>${json}</textarea>
+      <button class="tool-btn action" style="margin-top:8px;width:100%;" id="ov-close">Close</button>`;
+    document.getElementById('overlay').classList.add('show');
+    document.getElementById('ov-close').addEventListener('click', closeOverlay);
+    box.querySelector('textarea').select();
+  }
+
+  function importLevel() {
+    const box = document.getElementById('overlay-box');
+    box.innerHTML = `
+      <h2>Import Level JSON</h2>
+      <p style="color:#aaa;font-size:12px;">Paste a level JSON object below, then click Import.</p>
+      <textarea id="import-ta" placeholder='{"id":"...","platforms":[...],...}'></textarea>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <button class="tool-btn action" style="flex:1;" id="ov-do-import">Import</button>
+        <button class="tool-btn action" style="flex:1;" id="ov-cancel">Cancel</button>
+      </div>`;
+    document.getElementById('overlay').classList.add('show');
+    document.getElementById('ov-cancel').addEventListener('click', closeOverlay);
+    document.getElementById('ov-do-import').addEventListener('click', () => {
+      const txt = document.getElementById('import-ta').value.trim();
+      if (!txt) return;
+      try {
+        const d = JSON.parse(txt);
+        pushUndo();
+        lvl = {
+          id: d.id || 'imported', name: d.name || 'IMPORTED',
+          spawn: d.spawn || { x: 80, y: 300 },
+          goal: d.goal || { x: 2000, y: 340, w: 14, h: 120 },
+          endX: d.endX || 4200, deathY: d.deathY || 600, theme: d.theme || {},
+          platforms: d.platforms || [], pickups: d.pickups || [],
+          enemies: d.enemies || [], decorations: d.decorations || [],
+        };
+        selected = null;
+        cam = { x: -120, y: -60 }; zoom = 1;
+        syncInputs(); updateProps(); render();
+        closeOverlay();
+      } catch (err) {
+        alert('Invalid JSON: ' + err.message);
+      }
+    });
+  }
+
+  function showHelp() {
+    const box = document.getElementById('overlay-box');
+    box.innerHTML = `
+      <h2>Level Editor Help</h2>
+      <p><kbd>V</kbd> Select — click to select, drag to move, handles to resize</p>
+      <p><kbd>S</kbd> Draw solid platform — click &amp; drag</p>
+      <p><kbd>O</kbd> Draw one-way platform — click &amp; drag</p>
+      <p><kbd>C</kbd> Place coin</p>
+      <p><kbd>E</kbd> Place enemy</p>
+      <p><kbd>W</kbd> Set spawn point</p>
+      <p><kbd>G</kbd> Set goal</p>
+      <p><kbd>D</kbd> Place decoration</p>
+      <p><kbd>X</kbd> Eraser — click to delete</p>
+      <hr>
+      <p><kbd>Delete</kbd> Delete selected · <kbd>Arrows</kbd> Nudge selected</p>
+      <p><kbd>J</kbd> Jump Ruler — draw reach arc from cursor</p>
+      <p><kbd>Ctrl+Z</kbd> Undo · <kbd>Ctrl+Y</kbd> Redo</p>
+      <p><kbd>Ctrl+S</kbd> Save · <kbd>Ctrl+P</kbd> Play this level · <kbd>Ctrl+E</kbd> Export one · <kbd>Ctrl+G</kbd> Cycle grid</p>
+      <p><kbd>Scroll</kbd> Zoom · <kbd>Middle-drag</kbd> or <kbd>Space+drag</kbd> Pan</p>
+      <p style="margin-top:12px;color:#666;">Click anywhere outside to close.</p>`;
+    document.getElementById('overlay').classList.add('show');
+  }
+
+  function closeOverlay() { document.getElementById('overlay').classList.remove('show'); }
+  document.getElementById('overlay').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('overlay')) closeOverlay();
+  });
+
+  // ---- RENDERING ----
+  function render() {
+    const W = canvas.width, H = canvas.height;
+    if (!W || !H) return;
+
+    // Sky
+    ctx.fillStyle = C.sky;
+    ctx.fillRect(0, 0, W, H);
+
+    // Stars
+    ctx.fillStyle = C.star;
+    for (let i = 0; i < 30; i++) {
+      ctx.fillRect((i * 137) % W, (i * 53) % 200 + 20, 2, 2);
+    }
+
+    ctx.save();
+    ctx.scale(zoom, zoom);
+    ctx.translate(-cam.x, -cam.y);
+
+    const vl = cam.x, vt = cam.y;
+    const vr = cam.x + W / zoom, vb = cam.y + H / zoom;
+
+    // Grid
+    if (gridSize > 0) {
+      ctx.strokeStyle = C.guide;
+      ctx.lineWidth = 0.5 / zoom;
+      const gx0 = Math.floor(vl / gridSize) * gridSize;
+      const gy0 = Math.floor(vt / gridSize) * gridSize;
+      for (let gx = gx0; gx <= vr; gx += gridSize) {
+        ctx.beginPath(); ctx.moveTo(gx, vt); ctx.lineTo(gx, vb); ctx.stroke();
+      }
+      for (let gy = gy0; gy <= vb; gy += gridSize) {
+        ctx.beginPath(); ctx.moveTo(vl, gy); ctx.lineTo(vr, gy); ctx.stroke();
+      }
+    }
+
+    // Origin axes
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = 1 / zoom;
+    ctx.beginPath(); ctx.moveTo(-30, 0); ctx.lineTo(50, 0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -30); ctx.lineTo(0, 50); ctx.stroke();
+
+    // Death Y
+    ctx.strokeStyle = '#FF555588'; ctx.lineWidth = 2 / zoom;
+    ctx.setLineDash([8 / zoom, 4 / zoom]);
+    ctx.beginPath(); ctx.moveTo(vl, lvl.deathY); ctx.lineTo(vr, lvl.deathY); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#FF5555'; ctx.font = `${11 / zoom}px "Courier New"`;
+    ctx.fillText('deathY ' + lvl.deathY, vl + 6 / zoom, lvl.deathY - 5 / zoom);
+
+    // End X
+    ctx.strokeStyle = '#FFDD0066'; ctx.lineWidth = 2 / zoom;
+    ctx.setLineDash([8 / zoom, 4 / zoom]);
+    ctx.beginPath(); ctx.moveTo(lvl.endX, vt); ctx.lineTo(lvl.endX, vb); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#FFDD00';
+    ctx.fillText('endX ' + lvl.endX, lvl.endX + 4 / zoom, vt + 14 / zoom);
+
+    // Decorations
+    for (const d of lvl.decorations) {
+      ctx.fillStyle = d.color;
+      ctx.fillRect(d.x, d.y, d.w, d.h);
+    }
+
+    // Platforms
+    for (const p of lvl.platforms) {
+      if (p.type === 'one-way') {
+        ctx.fillStyle = C.grass;
+        ctx.fillRect(p.x, p.y, p.w, 6);
+        ctx.fillStyle = C.grassDark;
+        ctx.fillRect(p.x, p.y + 6, p.w, 2);
+        ctx.fillStyle = C.rockDark;
+        for (let dx = 0; dx < p.w; dx += 12) ctx.fillRect(p.x + dx, p.y + 8, 6, 2);
+        // Show full hitbox outline
+        ctx.strokeStyle = 'rgba(85,238,85,0.25)'; ctx.lineWidth = 1 / zoom;
+        ctx.strokeRect(p.x, p.y, p.w, p.h);
+      } else {
+        ctx.fillStyle = C.rock;
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+        ctx.fillStyle = C.rockDark;
+        ctx.fillRect(p.x, p.y + p.h - 6, p.w, 6);
+        ctx.fillStyle = C.grass;
+        ctx.fillRect(p.x, p.y, p.w, 6);
+        ctx.fillStyle = C.grassDark;
+        ctx.fillRect(p.x, p.y + 6, p.w, 2);
+      }
+    }
+
+    // Goal
+    const g = lvl.goal;
+    ctx.fillStyle = C.goalPole;
+    ctx.fillRect(g.x, g.y, g.w, g.h);
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 6; col++) {
+        ctx.fillStyle = ((row + col) & 1) ? C.goalFlagA : C.goalFlagB;
+        ctx.fillRect(g.x + g.w + col * 8, g.y + 4 + row * 8, 8, 8);
+      }
+    }
+
+    // Pickups
+    for (const pk of lvl.pickups) {
+      ctx.fillStyle = C.coinDark;
+      ctx.fillRect(pk.x, pk.y, pk.w, pk.h);
+      ctx.fillStyle = C.coin;
+      ctx.fillRect(pk.x + 2, pk.y + 2, pk.w - 4, pk.h - 4);
+    }
+
+    // Enemies
+    for (const e of lvl.enemies) {
+      // Patrol range
+      ctx.fillStyle = 'rgba(255,50,50,0.06)';
+      ctx.fillRect(e.minX, e.y - 4, e.maxX - e.minX, e.h + 8);
+      ctx.strokeStyle = 'rgba(255,50,50,0.2)'; ctx.lineWidth = 1 / zoom;
+      ctx.setLineDash([4 / zoom, 3 / zoom]);
+      ctx.strokeRect(e.minX, e.y - 4, e.maxX - e.minX, e.h + 8);
+      ctx.setLineDash([]);
+      // Body
+      ctx.fillStyle = C.enemyBody;
+      ctx.fillRect(e.x, e.y + 4, e.w, e.h - 6);
+      ctx.fillStyle = C.enemyDark;
+      ctx.fillRect(e.x, e.y + e.h - 4, e.w, 4);
+      ctx.fillStyle = C.enemyFoot;
+      ctx.fillRect(e.x + 2, e.y + e.h - 2, 6, 2);
+      ctx.fillRect(e.x + e.w - 8, e.y + e.h - 2, 6, 2);
+      // Eye
+      ctx.fillStyle = '#FFF';
+      const ex = e.vx > 0 ? e.x + e.w - 10 : e.x + 4;
+      ctx.fillRect(ex, e.y + 6, 6, 6);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(ex + (e.vx > 0 ? 3 : 0), e.y + 8, 3, 3);
+    }
+
+    // Spawn
+    const sp = lvl.spawn;
+    ctx.fillStyle = C.playerPants;
+    ctx.fillRect(sp.x, sp.y + 20, 26, 20);
+    ctx.fillStyle = C.playerShirt;
+    ctx.fillRect(sp.x, sp.y + 10, 26, 10);
+    ctx.fillStyle = C.playerHelmet;
+    ctx.fillRect(sp.x, sp.y, 26, 10);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(sp.x + 18, sp.y + 12, 4, 4);
+    ctx.fillStyle = '#FFDD00'; ctx.font = `bold ${10 / zoom}px "Courier New"`;
+    ctx.fillText('SPAWN', sp.x, sp.y - 4 / zoom);
+
+    // Selection highlight
+    if (selected) {
+      const b = objBounds(selected);
+      if (b) {
+        ctx.strokeStyle = C.sel; ctx.lineWidth = 2 / zoom;
+        ctx.setLineDash([5 / zoom, 3 / zoom]);
+        ctx.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+        ctx.setLineDash([]);
+
+        // Resize handles (not for spawn/pickup)
+        if (selected.kind !== 'spawn' && selected.kind !== 'pickup') {
+          const hs = 6 / zoom;
+          ctx.fillStyle = C.sel;
+          const hx = [b.x, b.x + b.w / 2, b.x + b.w];
+          const hy = [b.y, b.y + b.h / 2, b.y + b.h];
+          for (const px of hx)
+            for (const py of hy)
+              if (px !== hx[1] || py !== hy[1])
+                ctx.fillRect(px - hs / 2, py - hs / 2, hs, hs);
+        }
+      }
+    }
+
+    // Jump ruler — parabolic reach from the cursor in both directions.
+    if (jumpRuler) drawJumpArc(mouseWorld.x, mouseWorld.y);
+
+    ctx.restore();
+  }
+
+  // Analytic jump arc using index.html's TUNING constants.
+  //   y(t) = y0 + JUMP_V * t + 0.5 * g * t^2
+  //   x(t) = x0 ± MAX_RUN * t
+  // Stops drawing once the fall has gone ~400 px below the takeoff —
+  // past that, the player is already below any reasonable landing target.
+  function drawJumpArc(x0, y0) {
+    const { GRAVITY: g, JUMP_V: jv, MAX_RUN: vx } = PHYS;
+    const apexDy = (jv * jv) / (2 * g);           // ≈ 110
+    const horizHalf = vx * (2 * -jv / g);         // ≈ 176 from takeoff to landing-at-same-height
+    const lw = 2 / zoom;
+
+    // Reach envelope: outline the region reachable by any jump.
+    for (const dir of [1, -1]) {
+      ctx.strokeStyle = dir > 0 ? 'rgba(255,221,0,0.9)' : 'rgba(68,204,255,0.9)';
+      ctx.lineWidth = lw;
+      ctx.setLineDash([5 / zoom, 3 / zoom]);
+      ctx.beginPath();
+      for (let t = 0, first = true; t <= 80; t += 0.5) {
+        const px = x0 + dir * vx * t;
+        const py = y0 + jv * t + 0.5 * g * t * t;
+        if (first) { ctx.moveTo(px, py); first = false; }
+        else ctx.lineTo(px, py);
+        if (py - y0 > 400) break;
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Apex guide (horizontal line at max rise).
+    ctx.strokeStyle = 'rgba(255,221,0,0.35)';
+    ctx.lineWidth = 1 / zoom;
+    ctx.beginPath();
+    ctx.moveTo(x0 - horizHalf, y0 - apexDy);
+    ctx.lineTo(x0 + horizHalf, y0 - apexDy);
+    ctx.stroke();
+
+    // Takeoff marker.
+    ctx.fillStyle = '#FFDD00';
+    ctx.beginPath();
+    ctx.arc(x0, y0, 4 / zoom, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Labels: apex rise + horizontal reach.
+    ctx.fillStyle = '#FFDD00';
+    ctx.font = `${11 / zoom}px "Courier New"`;
+    ctx.fillText(`↑ ${Math.round(apexDy)}`, x0 + 6 / zoom, y0 - apexDy - 4 / zoom);
+    ctx.fillText(`↔ ${Math.round(horizHalf)}`, x0 + horizHalf + 4 / zoom, y0 - 4 / zoom);
+  }
+
+  // ---- INIT ----
+  rebuildLevelPicker();
+  syncInputs();
+  resize();
+  updateProps();
+
+})();
+</script>
+</body>
+</html>
