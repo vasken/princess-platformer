@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Keen-Like Platformer</title>
 <style>
   html, body {
@@ -9,6 +10,7 @@
     background: #000;
     font-family: 'Courier New', monospace;
     overflow: hidden;
+    overscroll-behavior: none;
   }
   body {
     display: flex;
@@ -23,6 +25,7 @@
     max-width: 100vw;
     max-height: 100vh;
     aspect-ratio: 16 / 9;
+    touch-action: none;
   }
 </style>
 </head>
@@ -70,12 +73,34 @@
   };
 
   // ---------- INPUT ----------
-  // `keys` = currently-held. `pressed` = edge-triggered, cleared each tick.
+  // `keys` = keyboard-held. `pressed` = keyboard edge-triggered, cleared each tick.
   const keys    = Object.create(null);
   const pressed = Object.create(null);
+  const touchHeld = { left: false, right: false, down: false, jump: false };
+  const touchPressed = Object.create(null);
+  const activePointers = new Map();
+  const coarsePointerQuery = window.matchMedia ? window.matchMedia('(pointer: coarse)') : null;
+  const viewport = {
+    touch: false,
+    smallScreen: false,
+    phonePortrait: false,
+  };
+  const TOUCH = {
+    leftZoneRatio: 0.5,
+    moveDeadzonePx: 24,
+    verticalDeadzonePx: 28,
+    swipeJumpPx: 26,
+    swipeDropPx: 34,
+    tapJumpMs: 220,
+    jumpHoldFrames: 8,
+    pauseZonePx: 88,
+    phoneMinSideMax: 820,
+  };
+  let touchJumpHoldFrames = 0;
 
   const BLOCKED = new Set([
     'ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space','KeyW','KeyA','KeyS','KeyD',
+    'Escape','KeyP','KeyR','Enter',
   ]);
   window.addEventListener('keydown', (e) => {
     if (BLOCKED.has(e.code)) e.preventDefault();
@@ -88,14 +113,198 @@
     keys[e.code] = false;
   });
   window.addEventListener('blur', () => {
-    for (const k in keys) keys[k] = false;
+    clearAllInputs();
   });
 
-  const isLeft         = () => keys['ArrowLeft']  || keys['KeyA'];
-  const isRight        = () => keys['ArrowRight'] || keys['KeyD'];
-  const isDown         = () => keys['ArrowDown']  || keys['KeyS'];
-  const jumpPressedNow = () => pressed['Space']   || pressed['ArrowUp'] || pressed['KeyW'];
-  const jumpHeld       = () => keys['Space']      || keys['ArrowUp']    || keys['KeyW'];
+  function clearTouchDirectionalState() {
+    touchHeld.left = false;
+    touchHeld.right = false;
+    touchHeld.down = false;
+  }
+
+  function clearTouchInputs() {
+    clearTouchDirectionalState();
+    touchHeld.jump = false;
+    touchJumpHoldFrames = 0;
+    activePointers.clear();
+    for (const k in touchPressed) delete touchPressed[k];
+  }
+
+  function clearAllInputs() {
+    for (const k in keys) keys[k] = false;
+    for (const k in pressed) delete pressed[k];
+    clearTouchInputs();
+  }
+
+  function syncViewportState() {
+    const coarse = coarsePointerQuery ? coarsePointerQuery.matches : false;
+    viewport.touch = coarse || navigator.maxTouchPoints > 0 || 'ontouchstart' in window;
+    viewport.smallScreen = Math.min(window.innerWidth, window.innerHeight) <= TOUCH.phoneMinSideMax;
+    viewport.phonePortrait = viewport.touch &&
+      viewport.smallScreen &&
+      window.innerHeight > window.innerWidth;
+    if (viewport.phonePortrait) clearTouchInputs();
+  }
+
+  function canvasPointFromEvent(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width > 0 ? W / rect.width : 1;
+    const scaleY = rect.height > 0 ? H / rect.height : 1;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+      rect,
+    };
+  }
+
+  function isPauseZone(point) {
+    return point.x >= W - TOUCH.pauseZonePx && point.y <= TOUCH.pauseZonePx;
+  }
+
+  function isTouchPointer(e) {
+    return e.pointerType === 'touch' || e.pointerType === 'pen';
+  }
+
+  function fireTouchJump() {
+    touchPressed.jump = true;
+    touchHeld.jump = true;
+    touchJumpHoldFrames = TOUCH.jumpHoldFrames;
+  }
+
+  function fireTouchPause() {
+    touchPressed.pause = true;
+  }
+
+  function fireTouchConfirm() {
+    touchPressed.confirm = true;
+  }
+
+  function fireTouchDrop() {
+    touchPressed.drop = true;
+  }
+
+  function refreshMovePointerState() {
+    clearTouchDirectionalState();
+    for (const state of activePointers.values()) {
+      if (state.role !== 'move') continue;
+      const dx = state.x - state.startX;
+      const dy = state.y - state.startY;
+      if (Math.abs(dx) >= TOUCH.moveDeadzonePx && Math.abs(dx) >= Math.abs(dy) * 0.85) {
+        if (dx < 0) touchHeld.left = true;
+        if (dx > 0) touchHeld.right = true;
+      } else if (dy >= TOUCH.verticalDeadzonePx && Math.abs(dy) > Math.abs(dx)) {
+        touchHeld.down = true;
+      }
+    }
+  }
+
+  function handleActionGesture(state) {
+    if (state.consumed) return;
+    const dx = state.x - state.startX;
+    const dy = state.y - state.startY;
+    if (dy <= -TOUCH.swipeJumpPx && Math.abs(dy) >= Math.abs(dx) * 0.8) {
+      fireTouchJump();
+      state.consumed = true;
+    } else if (dy >= TOUCH.swipeDropPx && Math.abs(dy) >= Math.abs(dx) * 0.8) {
+      fireTouchDrop();
+      state.consumed = true;
+    }
+  }
+
+  function finishTouchPointer(e) {
+    const state = activePointers.get(e.pointerId);
+    if (!state) return;
+    if (state.role === 'action' && !state.consumed) {
+      const duration = performance.now() - state.startedAt;
+      if (duration <= TOUCH.tapJumpMs) fireTouchJump();
+    }
+    activePointers.delete(e.pointerId);
+    refreshMovePointerState();
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!isTouchPointer(e)) return;
+    e.preventDefault();
+    syncViewportState();
+    Sfx.unlock();
+    if (GameState.current === 'DEAD' || GameState.current === 'WIN') {
+      fireTouchConfirm();
+      return;
+    }
+    if (viewport.phonePortrait) return;
+    const point = canvasPointFromEvent(e);
+    if (isPauseZone(point)) {
+      fireTouchPause();
+      return;
+    }
+
+    const role = point.x < W * TOUCH.leftZoneRatio ? 'move' : 'action';
+    const state = {
+      role,
+      startX: point.x,
+      startY: point.y,
+      x: point.x,
+      y: point.y,
+      startedAt: performance.now(),
+      consumed: false,
+    };
+    activePointers.set(e.pointerId, state);
+    canvas.setPointerCapture(e.pointerId);
+    if (role === 'move') refreshMovePointerState();
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    const state = activePointers.get(e.pointerId);
+    if (!state) return;
+    e.preventDefault();
+    const point = canvasPointFromEvent(e);
+    state.x = point.x;
+    state.y = point.y;
+    if (state.role === 'move') refreshMovePointerState();
+    else handleActionGesture(state);
+  });
+
+  function cancelPointer(e) {
+    if (!activePointers.has(e.pointerId)) return;
+    e.preventDefault();
+    finishTouchPointer(e);
+  }
+
+  canvas.addEventListener('pointerup', cancelPointer);
+  canvas.addEventListener('pointercancel', cancelPointer);
+  canvas.addEventListener('pointerleave', (e) => {
+    if (e.pointerType === 'mouse') return;
+    cancelPointer(e);
+  });
+
+  window.addEventListener('resize', syncViewportState);
+  window.addEventListener('orientationchange', syncViewportState);
+  if (coarsePointerQuery && coarsePointerQuery.addEventListener) {
+    coarsePointerQuery.addEventListener('change', syncViewportState);
+  }
+  syncViewportState();
+
+  const isLeft          = () => keys['ArrowLeft']  || keys['KeyA'] || touchHeld.left;
+  const isRight         = () => keys['ArrowRight'] || keys['KeyD'] || touchHeld.right;
+  const isDown          = () => keys['ArrowDown']  || keys['KeyS'] || touchHeld.down;
+  const jumpPressedNow  = () => pressed['Space']   || pressed['ArrowUp'] || pressed['KeyW'] || touchPressed.jump;
+  const jumpHeld        = () => keys['Space']      || keys['ArrowUp']    || keys['KeyW'] || touchHeld.jump;
+  const pausePressedNow = () => pressed['Escape']  || pressed['KeyP'] || touchPressed.pause;
+  const confirmPressedNow = () =>
+    pressed['KeyR'] || pressed['Space'] || pressed['Enter'] || touchPressed.confirm || touchPressed.jump;
+  const dropPressedNow = () => touchPressed.drop;
+
+  function clearPressedInputs() {
+    for (const k in pressed) delete pressed[k];
+    for (const k in touchPressed) delete touchPressed[k];
+  }
+
+  function advanceTouchState() {
+    if (touchJumpHoldFrames > 0) {
+      touchJumpHoldFrames--;
+      if (touchJumpHoldFrames === 0) touchHeld.jump = false;
+    }
+  }
 
   // ---------- AUDIO ----------
   // Tiny WebAudio synth. No assets. AudioContext is created lazily inside a
@@ -427,7 +636,7 @@
   // ---------- UPDATE ----------
   function update() {
     // Pause toggle — works from PLAY or PAUSE, ignored in DEAD/WIN.
-    if (pressed['Escape'] || pressed['KeyP']) {
+    if (pausePressedNow()) {
       if (GameState.current === 'PLAY')       GameState.transitionTo('PAUSE');
       else if (GameState.current === 'PAUSE') GameState.transitionTo('PLAY');
     }
@@ -435,7 +644,7 @@
     if (GameState.current === 'PAUSE') return;
 
     if (GameState.current === 'DEAD' || GameState.current === 'WIN') {
-      if (pressed['KeyR'] || pressed['Space'] || pressed['Enter']) {
+      if (confirmPressedNow()) {
         GameState.transitionTo('PLAY');
       }
       // Particles still animate under the overlay for a little life.
@@ -464,9 +673,9 @@
     // --- Drop-through (Down + Jump on a one-way platform) ---
     // Must check BEFORE the normal jump-buffer logic so the press is consumed.
     const wantDropThrough =
-      jumpPressedNow() && isDown() &&
       player.onGround && player.groundPlatform &&
-      player.groundPlatform.type === 'one-way';
+      player.groundPlatform.type === 'one-way' &&
+      ((jumpPressedNow() && isDown()) || dropPressedNow());
     if (wantDropThrough) {
       player.dropThrough = DROP_FRAMES;
       player.onGround = false;
@@ -817,7 +1026,7 @@
 
   function drawHud() {
     ctx.fillStyle = COLORS.hudBg;
-    ctx.fillRect(12, 12, 260, 96);
+    ctx.fillRect(12, 12, 360, viewport.touch ? 116 : 96);
     ctx.fillStyle = COLORS.hudText;
     ctx.font = 'bold 18px "Courier New", monospace';
     ctx.textBaseline = 'top';
@@ -826,8 +1035,22 @@
     ctx.fillStyle = '#FFDD00';
     ctx.fillText('LV ' + (currentLevelIndex + 1) + '/' + LEVELS.length + '  ' + (level.name || ''), 24, 42);
     ctx.fillStyle = COLORS.hudText;
-    ctx.fillText('A/D move  SPACE jump', 24, 66);
-    ctx.fillText('S+SPACE drop  P pause', 24, 86);
+    if (viewport.touch) {
+      ctx.fillText('Left half: drag to move / down', 24, 66);
+      ctx.fillText('Right half: tap or swipe jump  |  top-right pause', 24, 86);
+      ctx.fillText('Swipe down on right to drop through one-ways', 24, 106);
+    } else {
+      ctx.fillText('A/D move  SPACE jump', 24, 66);
+      ctx.fillText('S+SPACE drop  P pause', 24, 86);
+    }
+
+    if (viewport.touch && GameState.current !== 'DEAD' && GameState.current !== 'WIN') {
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(W - 72, 12, 60, 60);
+      ctx.fillStyle = '#FFF';
+      ctx.fillRect(W - 54, 28, 8, 28);
+      ctx.fillRect(W - 38, 28, 8, 28);
+    }
 
     // Transient level-name banner — shown briefly after load.
     if (bannerFrames > 0 && GameState.current === 'PLAY') {
@@ -864,13 +1087,30 @@
       ctx.fillStyle = '#FFF';
       ctx.font = 'bold 20px "Courier New", monospace';
       if (s === 'PAUSE') {
-        ctx.fillText('Press P or ESC to resume', W / 2, H / 2 + 20);
+        ctx.fillText(viewport.touch ? 'Tap the pause badge to resume' : 'Press P or ESC to resume', W / 2, H / 2 + 20);
       } else {
         ctx.fillText('Final score: ' + score, W / 2, H / 2 + 10);
-        ctx.fillText('Press R or SPACE to play again', W / 2, H / 2 + 42);
+        ctx.fillText(viewport.touch ? 'Tap to play again' : 'Press R or SPACE to play again', W / 2, H / 2 + 42);
       }
       ctx.textAlign = 'start';
     }
+  }
+
+  function drawRotateOverlay() {
+    ctx.fillStyle = 'rgba(0,0,0,0.82)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#FFDD00';
+    ctx.font = 'bold 54px "Courier New", monospace';
+    ctx.fillText('ROTATE DEVICE', W / 2, H / 2 - 48);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 24px "Courier New", monospace';
+    ctx.fillText('Play in landscape on phones.', W / 2, H / 2 + 10);
+    ctx.font = 'bold 18px "Courier New", monospace';
+    ctx.fillText('Turn your device sideways to continue.', W / 2, H / 2 + 50);
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'top';
   }
 
   let renderTick = 0;
@@ -902,6 +1142,7 @@
 
     ctx.restore();
     drawHud();  // HUD stays fixed (no shake)
+    if (viewport.phonePortrait) drawRotateOverlay();
     renderTick++;
   }
 
@@ -917,10 +1158,19 @@
 
     if (accumulator > TICK_MS * 10) accumulator = TICK_MS * 10;
 
+    if (viewport.phonePortrait) {
+      accumulator = 0;
+      clearPressedInputs();
+      render();
+      requestAnimationFrame(frame);
+      return;
+    }
+
     while (accumulator >= TICK_MS) {
       update();
       updateCamera();  // camera in the fixed step so it's frame-rate-independent
-      for (const k in pressed) delete pressed[k];
+      advanceTouchState();
+      clearPressedInputs();
       accumulator -= TICK_MS;
     }
 
