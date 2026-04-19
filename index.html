@@ -92,7 +92,7 @@
     swipeJumpPx: 26,
     swipeDropPx: 34,
     tapJumpMs: 220,
-    jumpHoldFrames: 8,
+    tapJumpHoldFrames: 12,
     pauseZonePx: 88,
     phoneMinSideMax: 820,
   };
@@ -165,10 +165,25 @@
     return e.pointerType === 'touch' || e.pointerType === 'pen';
   }
 
-  function fireTouchJump() {
+  function refreshActionJumpState() {
+    touchHeld.jump = touchJumpHoldFrames > 0;
+    for (const state of activePointers.values()) {
+      if (state.role === 'action' && state.jumpHeld) {
+        touchHeld.jump = true;
+        break;
+      }
+    }
+  }
+
+  function fireTouchJump(state = null) {
     touchPressed.jump = true;
     touchHeld.jump = true;
-    touchJumpHoldFrames = TOUCH.jumpHoldFrames;
+    if (state) {
+      state.jumpHeld = true;
+      touchJumpHoldFrames = 0;
+      return;
+    }
+    touchJumpHoldFrames = TOUCH.tapJumpHoldFrames;
   }
 
   function fireTouchPause() {
@@ -203,7 +218,7 @@
     const dx = state.x - state.startX;
     const dy = state.y - state.startY;
     if (dy <= -TOUCH.swipeJumpPx && Math.abs(dy) >= Math.abs(dx) * 0.8) {
-      fireTouchJump();
+      fireTouchJump(state);
       state.consumed = true;
     } else if (dy >= TOUCH.swipeDropPx && Math.abs(dy) >= Math.abs(dx) * 0.8) {
       fireTouchDrop();
@@ -220,6 +235,7 @@
     }
     activePointers.delete(e.pointerId);
     refreshMovePointerState();
+    refreshActionJumpState();
   }
 
   canvas.addEventListener('pointerdown', (e) => {
@@ -247,6 +263,7 @@
       y: point.y,
       startedAt: performance.now(),
       consumed: false,
+      jumpHeld: false,
     };
     activePointers.set(e.pointerId, state);
     canvas.setPointerCapture(e.pointerId);
@@ -302,8 +319,8 @@
   function advanceTouchState() {
     if (touchJumpHoldFrames > 0) {
       touchJumpHoldFrames--;
-      if (touchJumpHoldFrames === 0) touchHeld.jump = false;
     }
+    refreshActionJumpState();
   }
 
   // ---------- AUDIO ----------
