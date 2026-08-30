@@ -3,8 +3,8 @@
 // The editor's "Save levels.js" button rewrites this file.
 window.LEVELS = [
   {
-    id: 'alien_world_1',
-    name: 'ALIEN WORLD 1',
+    id: 'clover_meadow',
+    name: 'CLOVER MEADOW',
     spawn: { x: 80, y: 300 },
     goal: { x: 4000, y: 340, w: 14, h: 120 },
     endX: 4200,
@@ -53,15 +53,15 @@ window.LEVELS = [
     enemies: [
     ],
     decorations: [
-      { x: 260, y: 440, w: 18, h: 20, color: '#55EE55' },
-      { x: 1500, y: 440, w: 18, h: 20, color: '#55EE55' },
-      { x: 3000, y: 440, w: 18, h: 20, color: '#55EE55' },
+      { x: 260, y: 440, w: 18, h: 20, color: '#4A9A34' },
+      { x: 1500, y: 440, w: 18, h: 20, color: '#4A9A34' },
+      { x: 3000, y: 440, w: 18, h: 20, color: '#4A9A34' },
     ],
   },
 
   {
-    id: 'alien_world_2',
-    name: 'ALIEN WORLD 2',
+    id: 'bramble_wood',
+    name: 'BRAMBLE WOOD',
     spawn: { x: 80, y: 300 },
     goal: { x: 4500, y: 340, w: 14, h: 120 },
     endX: 4700,
@@ -123,17 +123,17 @@ window.LEVELS = [
       { x: 3700, y: 434, w: 26, h: 26, vx: 0.9, minX: 2980, maxX: 4650, alive: true },
     ],
     decorations: [
-      { x: 200, y: 440, w: 18, h: 20, color: '#55EE55' },
-      { x: 900, y: 440, w: 18, h: 20, color: '#55EE55' },
-      { x: 1500, y: 440, w: 18, h: 20, color: '#55EE55' },
-      { x: 2400, y: 440, w: 18, h: 20, color: '#55EE55' },
-      { x: 3500, y: 440, w: 18, h: 20, color: '#55EE55' },
+      { x: 200, y: 440, w: 18, h: 20, color: '#4A9A34' },
+      { x: 900, y: 440, w: 18, h: 20, color: '#4A9A34' },
+      { x: 1500, y: 440, w: 18, h: 20, color: '#4A9A34' },
+      { x: 2400, y: 440, w: 18, h: 20, color: '#4A9A34' },
+      { x: 3500, y: 440, w: 18, h: 20, color: '#4A9A34' },
     ],
   },
 
   {
-    id: 'alien_world_3',
-    name: 'ALIEN WORLD 3',
+    id: 'honey_hollow',
+    name: 'HONEY HOLLOW',
     spawn: { x: 80, y: 300 },
     goal: { x: 4140, y: 180, w: 14, h: 120 },
     endX: 4200,
@@ -180,8 +180,8 @@ window.LEVELS = [
   },
 
   {
-    id: 'alien_world_4',
-    name: 'ALIEN WORLD 4',
+    id: 'castle_gate',
+    name: 'CASTLE GATE',
     spawn: { x: 80, y: 300 },
     goal: { x: 2000, y: 340, w: 14, h: 120 },
     endX: 4200,

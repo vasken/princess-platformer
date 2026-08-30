@@ -1,1203 +1,2819 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<title>Keen-Like Platformer</title>
-<style>
-  html, body {
-    margin: 0; padding: 0; height: 100%;
-    background: #000;
-    font-family: 'Courier New', monospace;
-    overflow: hidden;
-    overscroll-behavior: none;
-  }
-  body {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  /* Letterbox: preserve 16:9, scale to fit viewport, crisp pixels. */
-  canvas {
-    background: #5FCDE4;
-    image-rendering: pixelated;
-    image-rendering: crisp-edges;
-    max-width: 100vw;
-    max-height: 100vh;
-    aspect-ratio: 16 / 9;
-    touch-action: none;
-  }
-</style>
-</head>
-<body>
-<canvas id="game" width="960" height="540"></canvas>
-<script src="levels.js"></script>
-<script>
-(() => {
-  'use strict';
-
-  const canvas = document.getElementById('game');
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  const playerSprite = new Image();
-  let playerSpriteReady = false;
-  playerSprite.onload = () => { playerSpriteReady = true; };
-  playerSprite.src = 'assets/princess-main.png';
-
-  // ---------- PALETTE (Commander Keen-ish EGA flavor) ----------
-  const COLORS = {
-    sky:          '#5FCDE4',
-    mountainBack: '#8E3F8E',
-    mountainFront:'#5A255A',
-    rock:         '#AA44AA',
-    rockDark:     '#661C66',
-    grass:        '#55EE55',
-    grassDark:    '#2A9A2A',
-    playerShirt:  '#EC2E2E',
-    playerPants:  '#2A9A2A',
-    playerHelmet: '#F5F5F5',
-    goalPole:     '#DDDDDD',
-    goalFlagA:    '#FFDD00',
-    goalFlagB:    '#EC2E2E',
-    hudBg:        'rgba(0,0,0,0.55)',
-    hudText:      '#FFFFFF',
-    star:         '#FFF27A',
-    pitBand:      '#2A0044',
-    pitSpike:     '#1A0033',
-    coin:         '#FFDD00',
-    coinDark:     '#C89600',
-    enemyBody:    '#22AA22',
-    enemyDark:    '#0C5F0C',
-    enemyFoot:    '#FF8844',
-    dust:         '#E4D4E4',
-  };
-
-  // ---------- INPUT ----------
-  // `keys` = keyboard-held. `pressed` = keyboard edge-triggered, cleared each tick.
-  const keys    = Object.create(null);
-  const pressed = Object.create(null);
-  const touchHeld = { left: false, right: false, down: false, jump: false };
-  const touchPressed = Object.create(null);
-  const activePointers = new Map();
-  const coarsePointerQuery = window.matchMedia ? window.matchMedia('(pointer: coarse)') : null;
-  const viewport = {
-    touch: false,
-    smallScreen: false,
-    phonePortrait: false,
-  };
-  const TOUCH = {
-    leftZoneRatio: 0.5,
-    moveDeadzonePx: 24,
-    verticalDeadzonePx: 28,
-    swipeJumpPx: 26,
-    swipeDropPx: 34,
-    tapJumpMs: 220,
-    tapJumpHoldFrames: 12,
-    pauseZonePx: 88,
-    phoneMinSideMax: 820,
-  };
-  let touchJumpHoldFrames = 0;
-
-  const BLOCKED = new Set([
-    'ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space','KeyW','KeyA','KeyS','KeyD',
-    'Escape','KeyP','KeyR','Enter',
-  ]);
-  window.addEventListener('keydown', (e) => {
-    if (BLOCKED.has(e.code)) e.preventDefault();
-    // Unlock audio inside a real user gesture (browsers require this).
-    Sfx.unlock();
-    if (!keys[e.code]) pressed[e.code] = true;
-    keys[e.code] = true;
-  });
-  window.addEventListener('keyup', (e) => {
-    keys[e.code] = false;
-  });
-  window.addEventListener('blur', () => {
-    clearAllInputs();
-  });
-
-  function clearTouchDirectionalState() {
-    touchHeld.left = false;
-    touchHeld.right = false;
-    touchHeld.down = false;
-  }
-
-  function clearTouchInputs() {
-    clearTouchDirectionalState();
-    touchHeld.jump = false;
-    touchJumpHoldFrames = 0;
-    activePointers.clear();
-    for (const k in touchPressed) delete touchPressed[k];
-  }
-
-  function clearAllInputs() {
-    for (const k in keys) keys[k] = false;
-    for (const k in pressed) delete pressed[k];
-    clearTouchInputs();
-  }
-
-  function syncViewportState() {
-    const coarse = coarsePointerQuery ? coarsePointerQuery.matches : false;
-    viewport.touch = coarse || navigator.maxTouchPoints > 0 || 'ontouchstart' in window;
-    viewport.smallScreen = Math.min(window.innerWidth, window.innerHeight) <= TOUCH.phoneMinSideMax;
-    viewport.phonePortrait = viewport.touch &&
-      viewport.smallScreen &&
-      window.innerHeight > window.innerWidth;
-    if (viewport.phonePortrait) clearTouchInputs();
-  }
-
-  function canvasPointFromEvent(e) {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = rect.width > 0 ? W / rect.width : 1;
-    const scaleY = rect.height > 0 ? H / rect.height : 1;
-    return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
-      rect,
-    };
-  }
-
-  function isPauseZone(point) {
-    return point.x >= W - TOUCH.pauseZonePx && point.y <= TOUCH.pauseZonePx;
-  }
-
-  function isTouchPointer(e) {
-    return e.pointerType === 'touch' || e.pointerType === 'pen';
-  }
-
-  function refreshActionJumpState() {
-    touchHeld.jump = touchJumpHoldFrames > 0;
-    for (const state of activePointers.values()) {
-      if (state.role === 'action' && state.jumpHeld) {
-        touchHeld.jump = true;
-        break;
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"
+    />
+    <title>Jumping Quinn</title>
+    <link rel="icon" href="data:," />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #000;
+        font-family: "Courier New", monospace;
+        overflow: hidden;
+        overscroll-behavior: none;
       }
-    }
-  }
-
-  function fireTouchJump(state = null) {
-    touchPressed.jump = true;
-    touchHeld.jump = true;
-    if (state) {
-      state.jumpHeld = true;
-      touchJumpHoldFrames = 0;
-      return;
-    }
-    touchJumpHoldFrames = TOUCH.tapJumpHoldFrames;
-  }
-
-  function fireTouchPause() {
-    touchPressed.pause = true;
-  }
-
-  function fireTouchConfirm() {
-    touchPressed.confirm = true;
-  }
-
-  function fireTouchDrop() {
-    touchPressed.drop = true;
-  }
-
-  function refreshMovePointerState() {
-    clearTouchDirectionalState();
-    for (const state of activePointers.values()) {
-      if (state.role !== 'move') continue;
-      const dx = state.x - state.startX;
-      const dy = state.y - state.startY;
-      if (Math.abs(dx) >= TOUCH.moveDeadzonePx && Math.abs(dx) >= Math.abs(dy) * 0.85) {
-        if (dx < 0) touchHeld.left = true;
-        if (dx > 0) touchHeld.right = true;
-      } else if (dy >= TOUCH.verticalDeadzonePx && Math.abs(dy) > Math.abs(dx)) {
-        touchHeld.down = true;
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
-    }
-  }
-
-  function handleActionGesture(state) {
-    if (state.consumed) return;
-    const dx = state.x - state.startX;
-    const dy = state.y - state.startY;
-    if (dy <= -TOUCH.swipeJumpPx && Math.abs(dy) >= Math.abs(dx) * 0.8) {
-      fireTouchJump(state);
-      state.consumed = true;
-    } else if (dy >= TOUCH.swipeDropPx && Math.abs(dy) >= Math.abs(dx) * 0.8) {
-      fireTouchDrop();
-      state.consumed = true;
-    }
-  }
-
-  function finishTouchPointer(e) {
-    const state = activePointers.get(e.pointerId);
-    if (!state) return;
-    if (state.role === 'action' && !state.consumed) {
-      const duration = performance.now() - state.startedAt;
-      if (duration <= TOUCH.tapJumpMs) fireTouchJump();
-    }
-    activePointers.delete(e.pointerId);
-    refreshMovePointerState();
-    refreshActionJumpState();
-  }
-
-  canvas.addEventListener('pointerdown', (e) => {
-    if (!isTouchPointer(e)) return;
-    e.preventDefault();
-    syncViewportState();
-    Sfx.unlock();
-    if (GameState.current === 'DEAD' || GameState.current === 'WIN') {
-      fireTouchConfirm();
-      return;
-    }
-    if (viewport.phonePortrait) return;
-    const point = canvasPointFromEvent(e);
-    if (isPauseZone(point)) {
-      fireTouchPause();
-      return;
-    }
-
-    const role = point.x < W * TOUCH.leftZoneRatio ? 'move' : 'action';
-    const state = {
-      role,
-      startX: point.x,
-      startY: point.y,
-      x: point.x,
-      y: point.y,
-      startedAt: performance.now(),
-      consumed: false,
-      jumpHeld: false,
-    };
-    activePointers.set(e.pointerId, state);
-    canvas.setPointerCapture(e.pointerId);
-    if (role === 'move') refreshMovePointerState();
-  });
-
-  canvas.addEventListener('pointermove', (e) => {
-    const state = activePointers.get(e.pointerId);
-    if (!state) return;
-    e.preventDefault();
-    const point = canvasPointFromEvent(e);
-    state.x = point.x;
-    state.y = point.y;
-    if (state.role === 'move') refreshMovePointerState();
-    else handleActionGesture(state);
-  });
-
-  function cancelPointer(e) {
-    if (!activePointers.has(e.pointerId)) return;
-    e.preventDefault();
-    finishTouchPointer(e);
-  }
-
-  canvas.addEventListener('pointerup', cancelPointer);
-  canvas.addEventListener('pointercancel', cancelPointer);
-  canvas.addEventListener('pointerleave', (e) => {
-    if (e.pointerType === 'mouse') return;
-    cancelPointer(e);
-  });
-
-  window.addEventListener('resize', syncViewportState);
-  window.addEventListener('orientationchange', syncViewportState);
-  if (coarsePointerQuery && coarsePointerQuery.addEventListener) {
-    coarsePointerQuery.addEventListener('change', syncViewportState);
-  }
-  syncViewportState();
-
-  const isLeft          = () => keys['ArrowLeft']  || keys['KeyA'] || touchHeld.left;
-  const isRight         = () => keys['ArrowRight'] || keys['KeyD'] || touchHeld.right;
-  const isDown          = () => keys['ArrowDown']  || keys['KeyS'] || touchHeld.down;
-  const jumpPressedNow  = () => pressed['Space']   || pressed['ArrowUp'] || pressed['KeyW'] || touchPressed.jump;
-  const jumpHeld        = () => keys['Space']      || keys['ArrowUp']    || keys['KeyW'] || touchHeld.jump;
-  const pausePressedNow = () => pressed['Escape']  || pressed['KeyP'] || touchPressed.pause;
-  const confirmPressedNow = () =>
-    pressed['KeyR'] || pressed['Space'] || pressed['Enter'] || touchPressed.confirm || touchPressed.jump;
-  const dropPressedNow = () => touchPressed.drop;
-
-  function clearPressedInputs() {
-    for (const k in pressed) delete pressed[k];
-    for (const k in touchPressed) delete touchPressed[k];
-  }
-
-  function advanceTouchState() {
-    if (touchJumpHoldFrames > 0) {
-      touchJumpHoldFrames--;
-    }
-    refreshActionJumpState();
-  }
-
-  // ---------- AUDIO ----------
-  // Tiny WebAudio synth. No assets. AudioContext is created lazily inside a
-  // real user gesture (keydown) so browsers will actually let it run.
-  const Sfx = (() => {
-    let ac = null;
-    let ready = false;
-
-    function unlock() {
-      if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
-      try {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) return;
-        ac = new AC();
-        ready = true;
-      } catch (_) {}
-    }
-
-    // Short pitched tone with linear attack and exponential decay.
-    // If `freqEnd` != freq, sweeps between them exponentially.
-    function tone(freq, freqEnd, dur, type = 'square', gain = 0.08) {
-      if (!ready) return;
-      const t = ac.currentTime;
-      const o = ac.createOscillator();
-      const g = ac.createGain();
-      o.type = type;
-      o.frequency.setValueAtTime(freq, t);
-      if (freqEnd && freqEnd !== freq) {
-        o.frequency.exponentialRampToValueAtTime(Math.max(1, freqEnd), t + dur);
+      /* Letterbox: preserve 16:9, scale to fit viewport, crisp pixels. */
+      canvas {
+        background: #5fcde4;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        max-width: 100vw;
+        max-height: 100vh;
+        aspect-ratio: 16 / 9;
+        touch-action: none;
       }
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(gain, t + 0.005);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      o.connect(g).connect(ac.destination);
-      o.start(t);
-      o.stop(t + dur + 0.02);
-    }
+    </style>
+  </head>
+  <body>
+    <canvas id="game" width="960" height="540"></canvas>
+    <script src="levels.js"></script>
+    <script>
+      (() => {
+        "use strict";
 
-    // White noise burst for landings/impacts.
-    function noise(dur, gain = 0.06) {
-      if (!ready) return;
-      const t = ac.currentTime;
-      const len = Math.max(1, Math.floor(ac.sampleRate * dur));
-      const buf = ac.createBuffer(1, len, ac.sampleRate);
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-      const src = ac.createBufferSource();
-      src.buffer = buf;
-      const g = ac.createGain();
-      g.gain.value = gain;
-      src.connect(g).connect(ac.destination);
-      src.start(t);
-    }
+        const canvas = document.getElementById("game");
+        const ctx = canvas.getContext("2d");
+        const W = canvas.width,
+          H = canvas.height;
+        const playerSprite = new Image();
+        let playerSpriteReady = false;
+        playerSprite.onload = () => {
+          playerSpriteReady = true;
+        };
+        playerSprite.src = "assets/princess-main.png";
 
-    return {
-      unlock,
-      jump:   () => tone(380, 720,  0.12, 'square',   0.08),
-      land:   () => noise(0.06, 0.05),
-      pickup: () => {
-        tone(880, 880, 0.05, 'square', 0.08);
-        setTimeout(() => tone(1320, 1320, 0.08, 'square', 0.08), 40);
-      },
-      stomp:  () => tone(260, 110, 0.10, 'square',   0.10),
-      bonk:   () => tone(180, 140, 0.06, 'square',   0.06),
-      death:  () => tone(400, 60,  0.50, 'sawtooth', 0.12),
-      win:    () => {
-        [523, 659, 784, 1046].forEach((f, i) =>
-          setTimeout(() => tone(f, f, 0.14, 'square', 0.09), i * 90)
-        );
-      },
-    };
-  })();
+        // Isometric forest assets used by the level-select map.
+        // Bboxes are tight per-sprite; the sheet's bottom rows pack sprites of
+        // varying widths so the layout is not a uniform grid.
+        const forestSheet = new Image();
+        let forestSheetReady = false;
+        forestSheet.onload = () => {
+          forestSheetReady = true;
+        };
+        forestSheet.src =
+          "assets/isometric_forest_puzzle_assets_sheet_transparent.png";
+        const FOREST_ATLAS = {
+          grass: { sx: 31, sy: 47, sw: 204, sh: 149 }, // green grass tile
+          grassDark: { sx: 260, sy: 47, sw: 204, sh: 149 }, // dark grass tile
+          grassFlowers: { sx: 710, sy: 47, sw: 204, sh: 149 }, // flower grass tile
+          pond: { sx: 710, sy: 213, sw: 201, sh: 152 }, // pond with reeds
+          stumpDefault: { sx: 34, sy: 839, sw: 181, sh: 154 }, // plain stump (completed node)
+          stumpGrass: { sx: 34, sy: 1008, sw: 181, sh: 154 }, // gold stump
+          stumpGold: { sx: 476, sy: 1008, sw: 185, sh: 154 }, // glowing stump (current node)
+          stoneBlock: { sx: 703, sy: 1008, sw: 182, sh: 154 }, // grey stone (locked node)
+          cabin: { sx: 28, sy: 1175, sw: 220, sh: 155 }, // log cabin
+          treeApple: { sx: 606, sy: 1175, sw: 122, sh: 155 }, // small deciduous tree
+          bushWhite: { sx: 762, sy: 1175, sw: 123, sh: 155 }, // white-flower bush
+          rocks: { sx: 20, sy: 1335, sw: 180, sh: 160 }, // rock pile
+          flowerBush: { sx: 200, sy: 1335, sw: 123, sh: 160 }, // pink/white flower bush
+          bushBerry: { sx: 347, sy: 1335, sw: 126, sh: 160 }, // red berry bush
+          pineTree: { sx: 502, sy: 1335, sw: 119, sh: 160 }, // pine tree
+          log: { sx: 631, sy: 1335, sw: 127, sh: 160 }, // wooden log
+          fence: { sx: 784, sy: 1335, sw: 126, sh: 160 }, // fence section
+          lantern: { sx: 67, sy: 1500, sw: 78, sh: 160 }, // lantern post
+        };
 
-  // ---------- TUNING ----------
-  const GRAVITY       = 0.6;
-  const MAX_FALL      = 14;
-  const MOVE_ACCEL    = 0.8;
-  const AIR_ACCEL     = 0.5;
-  const MAX_RUN       = 4.6;
-  const FRICTION      = 0.78;
-  const AIR_FRICTION  = 0.94;
-  const JUMP_VELOCITY = -11.5;  // v^2/(2g) ≈ 110px apex
-  const JUMP_CUT      = 0.45;
-  const COYOTE_FRAMES = 7;      // ~117ms
-  const BUFFER_FRAMES = 7;      // ~117ms
-  const STOMP_BOUNCE  = 0.7;    // fraction of JUMP_VELOCITY given on stomp
-  const DROP_FRAMES   = 8;      // ignore one-ways for this many ticks after drop-thru
+        // ---------- PALETTE (storybook meadow) ----------
+        // Warm daylight over green country. The old purple survives only as the
+        // haze on the far castle, which keeps the distance feeling like distance.
+        const COLORS = {
+          skyTop: "#8FD3EF",
+          skyMid: "#C6E9F4",
+          skyLow: "#FBE7C0",
+          sun: "rgba(255,238,180,0.75)",
+          cloud: "#FFFFFF",
+          cloudShade: "#DCEBF3",
+          castle: "#BDB6D8",
+          castleDark: "#A69ECA",
+          hillFar: "#A9C9A0",
+          hillNear: "#6FA85C",
+          rock: "#8A5A33",
+          rockDark: "#5E3A20",
+          rockLip: "#A87A4A",
+          grass: "#7BCB55",
+          grassDark: "#4A9A34",
+          plank: "#B07A44",
+          plankDark: "#7A5028",
+          playerShirt: "#E8368F",
+          playerPants: "#C21E6B",
+          playerHelmet: "#FFC531",
+          goalPole: "#8A5A33",
+          goalFlagA: "#E8368F",
+          goalFlagB: "#FFC531",
+          parchment: "#F6E6BE",
+          parchmentEdge: "#D9BF8C",
+          ink: "#3A2412",
+          inkSoft: "#8A6A3A",
+          hudText: "#FFF3D6",
+          bramble: "#16281A",
+          pitBand: "#2E1F16",
+          pitSpike: "#16281A",
+          coin: "#FFC531",
+          coinDark: "#C68A12",
+          enemyBody: "#D6453F",
+          enemyDark: "#9E2B27",
+          enemyFoot: "#F3E4C8",
+          dust: "#EADFCB",
+        };
+        let skyGradient = null;
 
-  // ---------- LEVELS ----------
-  // Defined in levels.js so the editor (editor.html) can load & save the same file.
-  const LEVELS = window.LEVELS;
+        // ---------- INPUT ----------
+        // `keys` = keyboard-held. `pressed` = keyboard edge-triggered, cleared each tick.
+        const keys = Object.create(null);
+        const pressed = Object.create(null);
+        const touchHeld = {
+          left: false,
+          right: false,
+          down: false,
+          jump: false,
+        };
+        const touchPressed = Object.create(null);
+        const activePointers = new Map();
+        const coarsePointerQuery = window.matchMedia
+          ? window.matchMedia("(pointer: coarse)")
+          : null;
+        const viewport = {
+          touch: false,
+          smallScreen: false,
+          phonePortrait: false,
+        };
+        const TOUCH = {
+          leftZoneRatio: 0.5,
+          moveDeadzonePx: 24,
+          verticalDeadzonePx: 28,
+          swipeJumpPx: 26,
+          swipeDropPx: 34,
+          tapJumpMs: 220,
+          tapJumpHoldFrames: 12,
+          pauseZonePx: 88,
+          phoneMinSideMax: 820,
+        };
+        let touchJumpHoldFrames = 0;
 
-  let level, platforms, goal;
-  let currentLevelIndex = 0;
+        const BLOCKED = new Set([
+          "ArrowLeft",
+          "ArrowRight",
+          "ArrowUp",
+          "ArrowDown",
+          "Space",
+          "KeyW",
+          "KeyA",
+          "KeyS",
+          "KeyD",
+          "Escape",
+          "KeyP",
+          "KeyR",
+          "KeyQ",
+          "Enter",
+        ]);
+        window.addEventListener("keydown", (e) => {
+          if (BLOCKED.has(e.code)) e.preventDefault();
+          // Unlock audio inside a real user gesture (browsers require this).
+          Sfx.unlock();
+          if (!keys[e.code]) pressed[e.code] = true;
+          keys[e.code] = true;
+        });
+        window.addEventListener("keyup", (e) => {
+          keys[e.code] = false;
+        });
+        window.addEventListener("blur", () => {
+          clearAllInputs();
+        });
 
-  // Level-name banner that shows briefly after loading a level.
-  let bannerFrames = 0;
-  let bannerText = '';
-  function showBanner(text, frames = 110) {
-    bannerText = text;
-    bannerFrames = frames;
-  }
+        function clearTouchDirectionalState() {
+          touchHeld.left = false;
+          touchHeld.right = false;
+          touchHeld.down = false;
+        }
 
-  // ---------- PLAYER ----------
-  const player = {
-    x: 80, y: 300, w: 26, h: 40,
-    vx: 0, vy: 0,
-    onGround: false,
-    facing: 1,
-    coyote: 0,
-    buffer: 0,
-    jumpCut: false,
-    groundPlatform: null,  // what we're standing on (for drop-through)
-    dropThrough: 0,        // frames remaining where one-ways are pass-through
-    squashT: 0,            // visual squash timer (landing)
-    stretchT: 0,           // visual stretch timer (jumping)
-  };
+        function clearTouchInputs() {
+          clearTouchDirectionalState();
+          touchHeld.jump = false;
+          touchJumpHoldFrames = 0;
+          activePointers.clear();
+          for (const k in touchPressed) delete touchPressed[k];
+        }
 
-  let score = 0;
-  let maxX = player.x;
+        function clearAllInputs() {
+          for (const k in keys) keys[k] = false;
+          for (const k in pressed) delete pressed[k];
+          clearTouchInputs();
+        }
 
-  // ---------- PARTICLES ----------
-  // Lightweight dust/debris system. Short-lived, affected by gravity.
-  const particles = [];
-  function spawnDust(cx, cy, count = 7, color = COLORS.dust) {
-    for (let i = 0; i < count; i++) {
-      const a = Math.random() * Math.PI - Math.PI; // upward hemisphere
-      const s = 0.8 + Math.random() * 1.6;
-      particles.push({
-        x: cx, y: cy,
-        vx: Math.cos(a) * s,
-        vy: Math.sin(a) * s - 0.5,
-        life: 18 + (Math.random() * 6 | 0),
-        size: 2 + (Math.random() * 2 | 0),
-        color,
-      });
-    }
-  }
-  function updateParticles() {
-    for (let i = particles.length - 1; i >= 0; i--) {
-      const p = particles[i];
-      p.x += p.vx;
-      p.y += p.vy;
-      p.vy += 0.18;       // light gravity
-      p.vx *= 0.96;
-      p.life--;
-      if (p.life <= 0) particles.splice(i, 1);
-    }
-  }
+        function syncViewportState() {
+          const coarse = coarsePointerQuery
+            ? coarsePointerQuery.matches
+            : false;
+          viewport.touch =
+            coarse || navigator.maxTouchPoints > 0 || "ontouchstart" in window;
+          viewport.smallScreen =
+            Math.min(window.innerWidth, window.innerHeight) <=
+            TOUCH.phoneMinSideMax;
+          viewport.phonePortrait =
+            viewport.touch &&
+            viewport.smallScreen &&
+            window.innerHeight > window.innerWidth;
+          if (viewport.phonePortrait) clearTouchInputs();
+        }
 
-  // ---------- SCREEN SHAKE ----------
-  let shakeFrames = 0;
-  let shakeMag = 0;
-  function shake(frames, mag) {
-    if (frames > shakeFrames) shakeFrames = frames;
-    if (mag > shakeMag)       shakeMag = mag;
-  }
+        function canvasPointFromEvent(e) {
+          const rect = canvas.getBoundingClientRect();
+          const scaleX = rect.width > 0 ? W / rect.width : 1;
+          const scaleY = rect.height > 0 ? H / rect.height : 1;
+          return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY,
+            rect,
+          };
+        }
 
-  // ---------- STATE MACHINE ----------
-  // PLAY <-> PAUSE, plus terminal DEAD/WIN states that await a keypress to reset.
-  const GameState = {
-    current: 'PLAY',
-    transitionTo(newState) {
-      const prev = this.current;
-      this.current = newState;
-      switch (newState) {
-        case 'PLAY':
-          // DEAD → retry current level (keep score).
-          // WIN or fresh boot → full reset from level 1.
-          // PAUSE → just resume, no state change.
-          if (prev === 'DEAD') retryLevel();
-          else if (prev !== 'PAUSE') resetGame();
-          break;
-        case 'DEAD':
-          Sfx.death();
-          shake(18, 8);
-          spawnDust(player.x + player.w / 2, player.y + player.h, 14, '#FF6666');
-          break;
-        case 'WIN':
-          Sfx.win();
-          break;
-        case 'PAUSE':
-          break;
-      }
-    },
-  };
+        function isPauseZone(point) {
+          return (
+            point.x >= W - TOUCH.pauseZonePx && point.y <= TOUCH.pauseZonePx
+          );
+        }
 
-  function loadLevel(index) {
-    // Deep-ish reset so replays don't see collected pickups / dead enemies.
-    currentLevelIndex = index;
-    const src = LEVELS[index];
-    level = {
-      ...src,
-      pickups: src.pickups.map(p => ({ ...p, taken: false })),
-      enemies: src.enemies.map(e => ({ ...e, alive: true })),
-    };
-    platforms = level.platforms;
-    goal = level.goal;
+        function isTouchPointer(e) {
+          return e.pointerType === "touch" || e.pointerType === "pen";
+        }
 
-    // Vertical camera bounds — auto-computed from platform geometry.
-    const minPlatY = Math.min(...platforms.map(p => p.y));
-    level.camCeiling = minPlatY - 100;
-    level.camFloor   = level.deathY;
-
-    showBanner('LEVEL ' + (index + 1) + ' — ' + (level.name || ''));
-  }
-
-  // Place the player at the current level's spawn and clear transient state.
-  // Called on fresh start, retry, and level advance — so we don't repeat the
-  // same position-reset in three places.
-  function placePlayerAtSpawn() {
-    player.x = level.spawn.x; player.y = level.spawn.y;
-    player.vx = 0; player.vy = 0;
-    player.onGround = false;
-    player.coyote = 0; player.buffer = 0;
-    player.jumpCut = false;
-    player.groundPlatform = null;
-    player.dropThrough = 0;
-    player.squashT = 0; player.stretchT = 0;
-    player.facing = 1;
-    maxX = player.x;
-    particles.length = 0;
-    shakeFrames = 0; shakeMag = 0;
-  }
-
-  // Starting level: honour ?level=N from the URL (1-indexed for humans,
-  // clamped to available levels) so the editor can jump straight to a
-  // specific level for playtesting.
-  function startingLevelIndex() {
-    const n = parseInt(new URLSearchParams(location.search).get('level'), 10);
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(0, Math.min(LEVELS.length - 1, n - 1));
-  }
-
-  // Fresh game: first level (or ?level=N), score 0.
-  function resetGame() {
-    loadLevel(startingLevelIndex());
-    placePlayerAtSpawn();
-    initCamera();
-    score = 0;
-  }
-
-  // Retry current level after death: keep score, reload the level fresh.
-  function retryLevel() {
-    loadLevel(currentLevelIndex);
-    placePlayerAtSpawn();
-    initCamera();
-  }
-
-  // Advance to the next level (or trigger WIN if this was the last one).
-  // Keeps the score running across levels.
-  function advanceLevel() {
-    if (currentLevelIndex + 1 < LEVELS.length) {
-      loadLevel(currentLevelIndex + 1);
-      placePlayerAtSpawn();
-      initCamera();
-      Sfx.pickup();  // light "level up" chime
-    } else {
-      GameState.transitionTo('WIN');
-    }
-  }
-
-  // ---------- COLLISION ----------
-  function aabb(a, b) {
-    return a.x < b.x + b.w && a.x + a.w > b.x &&
-           a.y < b.y + b.h && a.y + a.h > b.y;
-  }
-
-  // Axis-separated swept resolution.
-  // Returns { landed, hitWall, hitCeiling } so callers can trigger FX.
-  // Also sets player.groundPlatform to whatever we landed on (for drop-through).
-  function moveAndCollide() {
-    const result = { landed: false, hitWall: false, hitCeiling: false };
-
-    // --- X axis (one-way platforms are pass-through on X) ---
-    player.x += player.vx;
-    for (const p of platforms) {
-      if (p.type === 'one-way') continue;
-      if (aabb(player, p)) {
-        if (player.vx > 0)      player.x = p.x - player.w;
-        else if (player.vx < 0) player.x = p.x + p.w;
-        player.vx = 0;
-        result.hitWall = true;
-      }
-    }
-
-    // --- Y axis ---
-    player.y += player.vy;
-    let landed = false;
-    let landedOn = null;
-    for (const p of platforms) {
-      if (p.type === 'one-way') {
-        // Skip one-ways entirely during drop-through grace frames.
-        if (player.dropThrough > 0) continue;
-        // Only collide when falling AND previous feet position was at or near
-        // the platform top. The 6 px tolerance handles the edge case where the
-        // player barely reaches a high platform — feet clip slightly below p.y
-        // at apex, so without tolerance prevFeet > p.y and landing never fires.
-        if (player.vy > 0 && (player.y + player.h - player.vy) <= p.y + 6) {
-          if (aabb(player, p)) {
-            player.y = p.y - player.h;
-            player.vy = 0;
-            landed = true;
-            landedOn = p;
-            result.landed = true;
+        function refreshActionJumpState() {
+          touchHeld.jump = touchJumpHoldFrames > 0;
+          for (const state of activePointers.values()) {
+            if (state.role === "action" && state.jumpHeld) {
+              touchHeld.jump = true;
+              break;
+            }
           }
         }
-        continue;
-      }
-      if (aabb(player, p)) {
-        if (player.vy > 0) {
-          player.y = p.y - player.h;
-          player.vy = 0;
-          landed = true;
-          landedOn = p;
-          result.landed = true;
-        } else if (player.vy < 0) {
-          player.y = p.y + p.h;
-          player.vy = 0;
-          result.hitCeiling = true;
+
+        function fireTouchJump(state = null) {
+          touchPressed.jump = true;
+          touchHeld.jump = true;
+          if (state) {
+            state.jumpHeld = true;
+            touchJumpHoldFrames = 0;
+            return;
+          }
+          touchJumpHoldFrames = TOUCH.tapJumpHoldFrames;
         }
-      }
-    }
-    player.onGround = landed;
-    player.groundPlatform = landedOn;
-    return result;
-  }
 
-  // ---------- UPDATE ----------
-  function update() {
-    // Pause toggle — works from PLAY or PAUSE, ignored in DEAD/WIN.
-    if (pausePressedNow()) {
-      if (GameState.current === 'PLAY')       GameState.transitionTo('PAUSE');
-      else if (GameState.current === 'PAUSE') GameState.transitionTo('PLAY');
-    }
+        function fireTouchPause() {
+          touchPressed.pause = true;
+        }
 
-    if (GameState.current === 'PAUSE') return;
+        function fireTouchConfirm() {
+          touchPressed.confirm = true;
+        }
 
-    if (GameState.current === 'DEAD' || GameState.current === 'WIN') {
-      if (confirmPressedNow()) {
-        GameState.transitionTo('PLAY');
-      }
-      // Particles still animate under the overlay for a little life.
-      updateParticles();
-      if (shakeFrames > 0) shakeFrames--;
-      return;
-    }
+        function fireTouchDrop() {
+          touchPressed.drop = true;
+        }
 
-    // ---- PLAY state ----
+        function refreshMovePointerState() {
+          clearTouchDirectionalState();
+          for (const state of activePointers.values()) {
+            if (state.role !== "move") continue;
+            const dx = state.x - state.startX;
+            const dy = state.y - state.startY;
+            if (
+              Math.abs(dx) >= TOUCH.moveDeadzonePx &&
+              Math.abs(dx) >= Math.abs(dy) * 0.85
+            ) {
+              if (dx < 0) touchHeld.left = true;
+              if (dx > 0) touchHeld.right = true;
+            } else if (
+              dy >= TOUCH.verticalDeadzonePx &&
+              Math.abs(dy) > Math.abs(dx)
+            ) {
+              touchHeld.down = true;
+            }
+          }
+        }
 
-    // --- Horizontal movement ---
-    const accel = player.onGround ? MOVE_ACCEL : AIR_ACCEL;
-    if (isLeft() && !isRight()) {
-      player.vx -= accel;
-      player.facing = -1;
-    } else if (isRight() && !isLeft()) {
-      player.vx += accel;
-      player.facing = 1;
-    } else {
-      player.vx *= player.onGround ? FRICTION : AIR_FRICTION;
-      if (Math.abs(player.vx) < 0.05) player.vx = 0;
-    }
-    if (player.vx >  MAX_RUN) player.vx =  MAX_RUN;
-    if (player.vx < -MAX_RUN) player.vx = -MAX_RUN;
+        function handleActionGesture(state) {
+          if (state.consumed) return;
+          const dx = state.x - state.startX;
+          const dy = state.y - state.startY;
+          if (dy <= -TOUCH.swipeJumpPx && Math.abs(dy) >= Math.abs(dx) * 0.8) {
+            fireTouchJump(state);
+            state.consumed = true;
+          } else if (
+            dy >= TOUCH.swipeDropPx &&
+            Math.abs(dy) >= Math.abs(dx) * 0.8
+          ) {
+            fireTouchDrop();
+            state.consumed = true;
+          }
+        }
 
-    // --- Drop-through (Down + Jump on a one-way platform) ---
-    // Must check BEFORE the normal jump-buffer logic so the press is consumed.
-    const wantDropThrough =
-      player.onGround && player.groundPlatform &&
-      player.groundPlatform.type === 'one-way' &&
-      ((jumpPressedNow() && isDown()) || dropPressedNow());
-    if (wantDropThrough) {
-      player.dropThrough = DROP_FRAMES;
-      player.onGround = false;
-      player.groundPlatform = null;
-      player.y += 2;  // nudge below the platform top
-      // Consume the jump press so we don't also buffer a jump.
-      delete pressed['Space'];
-      delete pressed['ArrowUp'];
-      delete pressed['KeyW'];
-    }
+        function finishTouchPointer(e) {
+          const state = activePointers.get(e.pointerId);
+          if (!state) return;
+          if (state.role === "level-select") {
+            finishLevelSelectPointer(state);
+            activePointers.delete(e.pointerId);
+            refreshMovePointerState();
+            refreshActionJumpState();
+            return;
+          }
+          if (state.role === "action" && !state.consumed) {
+            const duration = performance.now() - state.startedAt;
+            if (duration <= TOUCH.tapJumpMs) fireTouchJump();
+          }
+          activePointers.delete(e.pointerId);
+          refreshMovePointerState();
+          refreshActionJumpState();
+        }
 
-    // --- Jump: buffering + coyote time ---
-    if (jumpPressedNow()) player.buffer = BUFFER_FRAMES;
+        canvas.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          syncViewportState();
+          Sfx.unlock();
+          if (GameState.current === "DEAD" || GameState.current === "WIN") {
+            fireTouchConfirm();
+            return;
+          }
+          if (viewport.phonePortrait) return;
+          const point = canvasPointFromEvent(e);
+          if (GameState.current === "LEVEL_SELECT") {
+            beginLevelSelectPointer(e, point);
+            return;
+          }
+          if (!isTouchPointer(e)) return;
+          if (isPauseZone(point)) {
+            fireTouchPause();
+            return;
+          }
 
-    const canJump = player.onGround || player.coyote > 0;
-    if (player.buffer > 0 && canJump) {
-      player.vy       = JUMP_VELOCITY;
-      player.onGround = false;
-      player.coyote   = 0;
-      player.buffer   = 0;
-      player.jumpCut  = false;
-      player.stretchT = 6;
-      Sfx.jump();
-    }
+          const role = point.x < W * TOUCH.leftZoneRatio ? "move" : "action";
+          const state = {
+            role,
+            startX: point.x,
+            startY: point.y,
+            x: point.x,
+            y: point.y,
+            startedAt: performance.now(),
+            consumed: false,
+            jumpHeld: false,
+          };
+          activePointers.set(e.pointerId, state);
+          canvas.setPointerCapture(e.pointerId);
+          if (role === "move") refreshMovePointerState();
+        });
 
-    // Variable jump height (cut once per jump on release).
-    if (!jumpHeld() && player.vy < 0 && !player.jumpCut) {
-      player.vy *= JUMP_CUT;
-      player.jumpCut = true;
-    }
+        canvas.addEventListener("pointermove", (e) => {
+          const state = activePointers.get(e.pointerId);
+          if (!state) return;
+          e.preventDefault();
+          const point = canvasPointFromEvent(e);
+          state.x = point.x;
+          state.y = point.y;
+          if (state.role === "level-select") updateLevelSelectPointer(state);
+          else if (state.role === "move") refreshMovePointerState();
+          else handleActionGesture(state);
+        });
 
-    // --- Gravity ---
-    player.vy += GRAVITY;
-    if (player.vy > MAX_FALL) player.vy = MAX_FALL;
+        function cancelPointer(e) {
+          if (!activePointers.has(e.pointerId)) return;
+          e.preventDefault();
+          finishTouchPointer(e);
+        }
 
-    const wasOnGround = player.onGround;
-    const prevVy = player.vy;
+        canvas.addEventListener("pointerup", cancelPointer);
+        canvas.addEventListener("pointercancel", cancelPointer);
+        canvas.addEventListener("pointerleave", (e) => {
+          if (e.pointerType === "mouse") return;
+          cancelPointer(e);
+        });
 
-    const collision = moveAndCollide();
+        window.addEventListener("resize", syncViewportState);
+        window.addEventListener("orientationchange", syncViewportState);
+        if (coarsePointerQuery && coarsePointerQuery.addEventListener) {
+          coarsePointerQuery.addEventListener("change", syncViewportState);
+        }
+        syncViewportState();
 
-    // React to collision events (this is why moveAndCollide returns them).
-    if (collision.landed && !wasOnGround) {
-      // Just landed this tick. Juice it.
-      player.squashT = 7;
-      Sfx.land();
-      spawnDust(player.x + player.w / 2, player.y + player.h - 1, 6);
-      // Hard landings shake a touch.
-      if (prevVy > 9) shake(4, 2);
-    }
-    if (collision.hitCeiling) {
-      Sfx.bonk();
-      shake(3, 2);
-    }
+        const isLeft = () =>
+          keys["ArrowLeft"] || keys["KeyA"] || touchHeld.left;
+        const isRight = () =>
+          keys["ArrowRight"] || keys["KeyD"] || touchHeld.right;
+        const isDown = () =>
+          keys["ArrowDown"] || keys["KeyS"] || touchHeld.down;
+        const jumpPressedNow = () =>
+          pressed["Space"] ||
+          pressed["ArrowUp"] ||
+          pressed["KeyW"] ||
+          touchPressed.jump;
+        const jumpHeld = () =>
+          keys["Space"] || keys["ArrowUp"] || keys["KeyW"] || touchHeld.jump;
+        const pausePressedNow = () =>
+          pressed["Escape"] || pressed["KeyP"] || touchPressed.pause;
+        const confirmPressedNow = () =>
+          pressed["KeyR"] ||
+          pressed["Space"] ||
+          pressed["Enter"] ||
+          touchPressed.confirm ||
+          touchPressed.jump;
+        const dropPressedNow = () => touchPressed.drop;
+        const quitPressedNow = () => pressed["KeyQ"];
+        const leftPressedNow = () => pressed["ArrowLeft"] || pressed["KeyA"];
+        const rightPressedNow = () => pressed["ArrowRight"] || pressed["KeyD"];
 
-    // Coyote time bookkeeping.
-    if (wasOnGround && !player.onGround && player.vy >= 0) {
-      player.coyote = COYOTE_FRAMES;
-    } else if (player.coyote > 0) {
-      player.coyote--;
-    }
-    if (player.buffer > 0) player.buffer--;
-    if (player.dropThrough > 0) player.dropThrough--;
-    if (player.squashT > 0) player.squashT--;
-    if (player.stretchT > 0) player.stretchT--;
+        function clearPressedInputs() {
+          for (const k in pressed) delete pressed[k];
+          for (const k in touchPressed) delete touchPressed[k];
+        }
 
-    // --- Pickups ---
-    for (const pk of level.pickups) {
-      if (pk.taken) continue;
-      if (aabb(player, pk)) {
-        pk.taken = true;
-        score += 100;
-        Sfx.pickup();
-        spawnDust(pk.x + pk.w / 2, pk.y + pk.h / 2, 4, COLORS.coin);
-      }
-    }
+        function advanceTouchState() {
+          if (touchJumpHoldFrames > 0) {
+            touchJumpHoldFrames--;
+          }
+          refreshActionJumpState();
+        }
 
-    // --- Enemies ---
-    for (const e of level.enemies) {
-      if (!e.alive) continue;
-      e.x += e.vx;
-      if (e.x < e.minX)           { e.x = e.minX;           e.vx = -e.vx; }
-      if (e.x + e.w > e.maxX)     { e.x = e.maxX - e.w;     e.vx = -e.vx; }
+        // ---------- AUDIO ----------
+        // Tiny WebAudio synth. No assets. AudioContext is created lazily inside a
+        // real user gesture (keydown) so browsers will actually let it run.
+        const Sfx = (() => {
+          let ac = null;
+          let ready = false;
 
-      if (aabb(player, e)) {
-        // Stomp: player is descending AND previous feet were above enemy top.
-        const prevFeet = player.y + player.h - player.vy;
-        if (player.vy > 0 && prevFeet <= e.y + 2) {
-          e.alive = false;
-          player.vy = JUMP_VELOCITY * STOMP_BOUNCE;
+          function unlock() {
+            if (ac) {
+              if (ac.state === "suspended") ac.resume();
+              return;
+            }
+            try {
+              const AC = window.AudioContext || window.webkitAudioContext;
+              if (!AC) return;
+              ac = new AC();
+              ready = true;
+            } catch (_) {}
+          }
+
+          // Short pitched tone with linear attack and exponential decay.
+          // If `freqEnd` != freq, sweeps between them exponentially.
+          function tone(freq, freqEnd, dur, type = "square", gain = 0.08) {
+            if (!ready) return;
+            const t = ac.currentTime;
+            const o = ac.createOscillator();
+            const g = ac.createGain();
+            o.type = type;
+            o.frequency.setValueAtTime(freq, t);
+            if (freqEnd && freqEnd !== freq) {
+              o.frequency.exponentialRampToValueAtTime(
+                Math.max(1, freqEnd),
+                t + dur,
+              );
+            }
+            g.gain.setValueAtTime(0, t);
+            g.gain.linearRampToValueAtTime(gain, t + 0.005);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+            o.connect(g).connect(ac.destination);
+            o.start(t);
+            o.stop(t + dur + 0.02);
+          }
+
+          // White noise burst for landings/impacts.
+          function noise(dur, gain = 0.06) {
+            if (!ready) return;
+            const t = ac.currentTime;
+            const len = Math.max(1, Math.floor(ac.sampleRate * dur));
+            const buf = ac.createBuffer(1, len, ac.sampleRate);
+            const d = buf.getChannelData(0);
+            for (let i = 0; i < len; i++)
+              d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+            const src = ac.createBufferSource();
+            src.buffer = buf;
+            const g = ac.createGain();
+            g.gain.value = gain;
+            src.connect(g).connect(ac.destination);
+            src.start(t);
+          }
+
+          return {
+            unlock,
+            jump: () => tone(380, 720, 0.12, "square", 0.08),
+            land: () => noise(0.06, 0.05),
+            pickup: () => {
+              tone(880, 880, 0.05, "square", 0.08);
+              setTimeout(() => tone(1320, 1320, 0.08, "square", 0.08), 40);
+            },
+            stomp: () => tone(260, 110, 0.1, "square", 0.1),
+            bonk: () => tone(180, 140, 0.06, "square", 0.06),
+            death: () => tone(400, 60, 0.5, "sawtooth", 0.12),
+            win: () => {
+              [523, 659, 784, 1046].forEach((f, i) =>
+                setTimeout(() => tone(f, f, 0.14, "square", 0.09), i * 90),
+              );
+            },
+          };
+        })();
+
+        // ---------- TUNING ----------
+        const GRAVITY = 0.6;
+        const MAX_FALL = 14;
+        const MOVE_ACCEL = 0.8;
+        const AIR_ACCEL = 0.5;
+        const MAX_RUN = 4.6;
+        const FRICTION = 0.78;
+        const AIR_FRICTION = 0.94;
+        const JUMP_VELOCITY = -11.5; // v^2/(2g) ≈ 110px apex
+        const JUMP_CUT = 0.45;
+        const COYOTE_FRAMES = 7; // ~117ms
+        const BUFFER_FRAMES = 7; // ~117ms
+        const STOMP_BOUNCE = 0.7; // fraction of JUMP_VELOCITY given on stomp
+        const DROP_FRAMES = 8; // ignore one-ways for this many ticks after drop-thru
+
+        // ---------- LEVELS ----------
+        // Defined in levels.js so the editor (editor.html) can load & save the same file.
+        const LEVELS = window.LEVELS;
+
+        const LEVEL_PROGRESS_KEY = "keenLike.levelProgress.v1";
+
+        function readMaxLevelUnlocked() {
+          try {
+            const saved = Number.parseInt(
+              localStorage.getItem(LEVEL_PROGRESS_KEY),
+              10,
+            );
+            return Number.isFinite(saved)
+              ? Math.max(0, Math.min(LEVELS.length - 1, saved))
+              : 0;
+          } catch (_) {
+            return 0;
+          }
+        }
+
+        function unlockThrough(index) {
+          const unlocked = Math.max(0, Math.min(LEVELS.length - 1, index));
+          if (unlocked <= maxLevelUnlocked) return;
+          maxLevelUnlocked = unlocked;
+          try {
+            localStorage.setItem(LEVEL_PROGRESS_KEY, String(maxLevelUnlocked));
+          } catch (_) {
+            // Progress remains available for this session when storage is unavailable.
+          }
+        }
+
+        let level, platforms, goal;
+        let currentLevelIndex = 0;
+        let maxLevelUnlocked = readMaxLevelUnlocked();
+        let levelSelectIndex = maxLevelUnlocked;
+        const levelSelectCamera = {
+          x: 0,
+          y: 0,
+          targetX: 0,
+          targetY: 0,
+          initialized: false,
+          dragging: false,
+        };
+        let levelSelectHitAreas = [];
+        let levelSelectPlayArea = null;
+
+        // Level-name banner that shows briefly after loading a level.
+        let bannerFrames = 0;
+        let bannerText = "";
+        let bannerEyebrow = "";
+        function showBanner(text, frames = 110) {
+          bannerText = text;
+          bannerFrames = frames;
+        }
+
+        // ---------- PLAYER ----------
+        const player = {
+          x: 80,
+          y: 300,
+          w: 26,
+          h: 40,
+          vx: 0,
+          vy: 0,
+          onGround: false,
+          facing: 1,
+          coyote: 0,
+          buffer: 0,
+          jumpCut: false,
+          groundPlatform: null, // what we're standing on (for drop-through)
+          dropThrough: 0, // frames remaining where one-ways are pass-through
+          squashT: 0, // visual squash timer (landing)
+          stretchT: 0, // visual stretch timer (jumping)
+        };
+
+        let score = 0;
+        let maxX = player.x;
+
+        // ---------- PARTICLES ----------
+        // Lightweight dust/debris system. Short-lived, affected by gravity.
+        const particles = [];
+        function spawnDust(cx, cy, count = 7, color = COLORS.dust) {
+          for (let i = 0; i < count; i++) {
+            const a = Math.random() * Math.PI - Math.PI; // upward hemisphere
+            const s = 0.8 + Math.random() * 1.6;
+            particles.push({
+              x: cx,
+              y: cy,
+              vx: Math.cos(a) * s,
+              vy: Math.sin(a) * s - 0.5,
+              life: 18 + ((Math.random() * 6) | 0),
+              size: 2 + ((Math.random() * 2) | 0),
+              color,
+            });
+          }
+        }
+        function updateParticles() {
+          for (let i = particles.length - 1; i >= 0; i--) {
+            const p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy += 0.18; // light gravity
+            p.vx *= 0.96;
+            p.life--;
+            if (p.life <= 0) particles.splice(i, 1);
+          }
+        }
+
+        // ---------- SCREEN SHAKE ----------
+        let shakeFrames = 0;
+        let shakeMag = 0;
+        function shake(frames, mag) {
+          if (frames > shakeFrames) shakeFrames = frames;
+          if (mag > shakeMag) shakeMag = mag;
+        }
+
+        // ---------- STATE MACHINE ----------
+        // PLAY <-> PAUSE, plus terminal DEAD/WIN states that await a keypress to reset.
+        // LEVEL_SELECT shows between levels (and on manual quit) — its handler loads the
+        // chosen level itself before transitioning to PLAY, so PLAY skips reset on that path.
+        const GameState = {
+          current: "BOOT",
+          transitionTo(newState) {
+            const prev = this.current;
+            this.current = newState;
+            switch (newState) {
+              case "PLAY":
+                // DEAD → retry current level (keep score).
+                // LEVEL_SELECT → caller already loaded the chosen level; just resume.
+                // PAUSE → just resume, no state change.
+                // WIN or fresh boot → full reset from level 1.
+                if (prev === "DEAD") retryLevel();
+                else if (prev === "LEVEL_SELECT") {
+                  /* caller handled load */
+                } else if (prev !== "PAUSE") resetGame();
+                break;
+              case "DEAD":
+                Sfx.death();
+                shake(18, 8);
+                spawnDust(
+                  player.x + player.w / 2,
+                  player.y + player.h,
+                  14,
+                  "#FF6666",
+                );
+                break;
+              case "WIN":
+                Sfx.win();
+                break;
+              case "PAUSE":
+                break;
+              case "LEVEL_SELECT":
+                bannerFrames = 0;
+                bannerText = "";
+                shakeFrames = 0;
+                shakeMag = 0;
+                centerLevelSelectCamera(true);
+                break;
+            }
+          },
+        };
+
+        function loadLevel(index) {
+          // Deep-ish reset so replays don't see collected pickups / dead enemies.
+          currentLevelIndex = index;
+          const src = LEVELS[index];
+          level = {
+            ...src,
+            pickups: src.pickups.map((p) => ({ ...p, taken: false })),
+            enemies: src.enemies.map((e) => ({ ...e, alive: true })),
+          };
+          platforms = level.platforms;
+          goal = level.goal;
+
+          // Vertical camera bounds — auto-computed from platform geometry.
+          const minPlatY = Math.min(...platforms.map((p) => p.y));
+          level.camCeiling = minPlatY - 100;
+          level.camFloor = level.deathY;
+
+          bannerEyebrow = "LEVEL " + (index + 1) + " OF " + LEVELS.length;
+          showBanner(level.name || "LEVEL " + (index + 1));
+        }
+
+        // Place the player at the current level's spawn and clear transient state.
+        // Called on fresh start, retry, and level advance — so we don't repeat the
+        // same position-reset in three places.
+        function placePlayerAtSpawn() {
+          player.x = level.spawn.x;
+          player.y = level.spawn.y;
+          player.vx = 0;
+          player.vy = 0;
+          player.onGround = false;
+          player.coyote = 0;
+          player.buffer = 0;
           player.jumpCut = false;
-          player.stretchT = 6;
-          score += 200;
-          Sfx.stomp();
-          spawnDust(e.x + e.w / 2, e.y + e.h, 8, COLORS.enemyDark);
-          shake(3, 2);
-        } else {
-          GameState.transitionTo('DEAD');
-          return;
+          player.groundPlatform = null;
+          player.dropThrough = 0;
+          player.squashT = 0;
+          player.stretchT = 0;
+          player.facing = 1;
+          maxX = player.x;
+          particles.length = 0;
+          shakeFrames = 0;
+          shakeMag = 0;
         }
-      }
-    }
 
-    // --- Score: furthest-right progress only ---
-    if (player.x > maxX) {
-      score += (player.x - maxX) | 0;
-      maxX = player.x;
-    }
+        // Starting level: honour ?level=N from the URL (1-indexed for humans,
+        // clamped to available levels) so the editor can jump straight to a
+        // specific level for playtesting.
+        function startingLevelIndex() {
+          const n = parseInt(
+            new URLSearchParams(location.search).get("level"),
+            10,
+          );
+          if (!Number.isFinite(n)) return 0;
+          return Math.max(0, Math.min(LEVELS.length - 1, n - 1));
+        }
 
-    // --- Win / lose ---
-    // Touching the goal advances to the next level. If this was the final
-    // level, advanceLevel() transitions to WIN internally.
-    if (aabb(player, goal)) {
-      advanceLevel();
-      return;
-    }
-    if (player.y > level.deathY) {
-      GameState.transitionTo('DEAD');
-      return;
-    }
+        function hasPlaytestLevel() {
+          return new URLSearchParams(location.search).has("level");
+        }
 
-    // Particles, shake, banner tick.
-    updateParticles();
-    if (shakeFrames > 0) shakeFrames--;
-    if (bannerFrames > 0) bannerFrames--;
-  }
+        // Fresh game: first level (or ?level=N), score 0.
+        function resetGame() {
+          loadLevel(startingLevelIndex());
+          placePlayerAtSpawn();
+          initCamera();
+          score = 0;
+        }
 
-  // ---------- CAMERA ----------
-  // Smoothed follow: X with look-ahead bias, Y locked to last grounded
-  // position so the camera doesn't bob mid-jump.
-  const cam = { x: 0, y: 0 };
-  let lastGroundY = 0;
+        // Retry current level after death: keep score, reload the level fresh.
+        function retryLevel() {
+          loadLevel(currentLevelIndex);
+          placePlayerAtSpawn();
+          initCamera();
+        }
 
-  function initCamera() {
-    lastGroundY = player.y;
-    const targetY = lastGroundY - H * 0.7;
-    const maxY = level.camFloor - H;
-    const minY = Math.min(level.camCeiling, maxY);
-    cam.y = Math.max(minY, Math.min(targetY, maxY));
-    cam.x = Math.max(0, Math.min(player.x + player.w / 2 - W / 2, level.endX - W));
-  }
+        // Advance to the next level (or trigger WIN if this was the last one).
+        // Keeps the score running across levels. Routes through the LEVEL_SELECT screen
+        // so the player picks the next level themselves; the next level is preselected
+        // and unlocked here. Final level still goes straight to WIN.
+        function advanceLevel() {
+          if (currentLevelIndex + 1 < LEVELS.length) {
+            const nextIndex = currentLevelIndex + 1;
+            unlockThrough(nextIndex);
+            levelSelectIndex = nextIndex;
+            Sfx.pickup(); // light "level up" chime
+            GameState.transitionTo("LEVEL_SELECT");
+          } else {
+            GameState.transitionTo("WIN");
+          }
+        }
 
-  function updateCamera() {
-    // Horizontal
-    const lookAhead = player.facing * 70;
-    const targetX = player.x + player.w / 2 - W / 2 + lookAhead;
-    cam.x += (targetX - cam.x) * 0.10;
-    if (cam.x < 0) cam.x = 0;
-    if (cam.x > level.endX - W) cam.x = level.endX - W;
+        // ---------- COLLISION ----------
+        function aabb(a, b) {
+          return (
+            a.x < b.x + b.w &&
+            a.x + a.w > b.x &&
+            a.y < b.y + b.h &&
+            a.y + a.h > b.y
+          );
+        }
 
-    // Vertical — only retarget when on ground to avoid jump bobbing.
-    if (player.onGround) lastGroundY = player.y;
-    const targetY = lastGroundY - H * 0.7;
-    cam.y += (targetY - cam.y) * 0.08;
-    const maxY = level.camFloor - H;
-    const minY = Math.min(level.camCeiling, maxY);
-    if (cam.y < minY) cam.y = minY;
-    if (cam.y > maxY) cam.y = maxY;
-  }
+        // Axis-separated swept resolution.
+        // Returns { landed, hitWall, hitCeiling } so callers can trigger FX.
+        // Also sets player.groundPlatform to whatever we landed on (for drop-through).
+        function moveAndCollide() {
+          const result = { landed: false, hitWall: false, hitCeiling: false };
 
-  // ---------- RENDER ----------
-  function drawBackground() {
-    ctx.fillStyle = COLORS.sky;
-    ctx.fillRect(0, 0, W, H);
+          // --- X axis (one-way platforms are pass-through on X) ---
+          player.x += player.vx;
+          for (const p of platforms) {
+            if (p.type === "one-way") continue;
+            if (aabb(player, p)) {
+              if (player.vx > 0) player.x = p.x - player.w;
+              else if (player.vx < 0) player.x = p.x + p.w;
+              player.vx = 0;
+              result.hitWall = true;
+            }
+          }
 
-    // Stars
-    ctx.fillStyle = COLORS.star;
-    for (let i = 0; i < 50; i++) {
-      const raw = (i * 137 - cam.x * 0.1) % (W + 200);
-      const sx  = raw < 0 ? raw + W + 200 : raw;
-      const sy  = (i * 53) % 200 + 20;
-      ctx.fillRect(sx - 100, sy, 2, 2);
-    }
+          // --- Y axis ---
+          player.y += player.vy;
+          let landed = false;
+          let landedOn = null;
+          for (const p of platforms) {
+            if (p.type === "one-way") {
+              // Skip one-ways entirely during drop-through grace frames.
+              if (player.dropThrough > 0) continue;
+              // Only collide when falling AND previous feet position was at or near
+              // the platform top. The 6 px tolerance handles the edge case where the
+              // player barely reaches a high platform — feet clip slightly below p.y
+              // at apex, so without tolerance prevFeet > p.y and landing never fires.
+              if (player.vy > 0 && player.y + player.h - player.vy <= p.y + 6) {
+                if (aabb(player, p)) {
+                  player.y = p.y - player.h;
+                  player.vy = 0;
+                  landed = true;
+                  landedOn = p;
+                  result.landed = true;
+                }
+              }
+              continue;
+            }
+            if (aabb(player, p)) {
+              if (player.vy > 0) {
+                player.y = p.y - player.h;
+                player.vy = 0;
+                landed = true;
+                landedOn = p;
+                result.landed = true;
+              } else if (player.vy < 0) {
+                player.y = p.y + p.h;
+                player.vy = 0;
+                result.hitCeiling = true;
+              }
+            }
+          }
+          player.onGround = landed;
+          player.groundPlatform = landedOn;
+          return result;
+        }
 
-    // Parallax far mountains
-    ctx.fillStyle = COLORS.mountainBack;
-    const farOff = -((cam.x * 0.2) % 400);
-    for (let i = -1; i < Math.ceil(W / 400) + 1; i++) {
-      const bx = farOff + i * 400;
-      ctx.beginPath();
-      ctx.moveTo(bx,       H - 120);
-      ctx.lineTo(bx + 200, H - 260);
-      ctx.lineTo(bx + 400, H - 120);
-      ctx.closePath();
-      ctx.fill();
-    }
+        // ---------- UPDATE ----------
+        function update() {
+          // Quit-to-level-select — works from PLAY or PAUSE, ignored elsewhere.
+          if (
+            quitPressedNow() &&
+            (GameState.current === "PLAY" || GameState.current === "PAUSE")
+          ) {
+            // A ?level=N editor playtest may be ahead of normal saved progress.
+            levelSelectIndex = Math.min(currentLevelIndex, maxLevelUnlocked);
+            GameState.transitionTo("LEVEL_SELECT");
+            return;
+          }
 
-    // Parallax near mountains
-    ctx.fillStyle = COLORS.mountainFront;
-    const nearOff = -((cam.x * 0.45) % 320);
-    for (let i = -1; i < Math.ceil(W / 320) + 1; i++) {
-      const bx = nearOff + i * 320;
-      ctx.beginPath();
-      ctx.moveTo(bx,       H - 80);
-      ctx.lineTo(bx + 160, H - 200);
-      ctx.lineTo(bx + 320, H - 80);
-      ctx.closePath();
-      ctx.fill();
-    }
+          // Pause toggle — works from PLAY or PAUSE, ignored in DEAD/WIN/LEVEL_SELECT.
+          if (pausePressedNow()) {
+            if (GameState.current === "PLAY") GameState.transitionTo("PAUSE");
+            else if (GameState.current === "PAUSE")
+              GameState.transitionTo("PLAY");
+          }
 
-    // --- Pit band ---
-    // Drawn behind platforms. Platforms extend to the bottom of the canvas so
-    // they cover this band wherever they exist — gaps reveal the spiked pit.
-    const bandTop = H - 50;
-    ctx.fillStyle = COLORS.pitBand;
-    ctx.fillRect(0, bandTop, W, H - bandTop);
-    ctx.fillStyle = COLORS.pitSpike;
-    for (let i = 0; i < W + 20; i += 18) {
-      ctx.beginPath();
-      ctx.moveTo(i,      bandTop);
-      ctx.lineTo(i + 9,  bandTop - 18);
-      ctx.lineTo(i + 18, bandTop);
-      ctx.closePath();
-      ctx.fill();
-    }
-  }
+          if (GameState.current === "PAUSE") return;
 
-  function drawPlatform(p) {
-    const x = p.x - cam.x, y = p.y - cam.y;
-    if (x + p.w < 0 || x > W) return;
-    if (p.type === 'one-way') {
-      ctx.fillStyle = COLORS.grass;
-      ctx.fillRect(x, y, p.w, 6);
-      ctx.fillStyle = COLORS.grassDark;
-      ctx.fillRect(x, y + 6, p.w, 2);
-      ctx.fillStyle = COLORS.rockDark;
-      for (let dx = 0; dx < p.w; dx += 12) {
-        ctx.fillRect(x + dx, y + 8, 6, 2);
-      }
-      return;
-    }
-    ctx.fillStyle = COLORS.rock;
-    ctx.fillRect(x, y, p.w, p.h);
-    ctx.fillStyle = COLORS.rockDark;
-    ctx.fillRect(x, y + p.h - 6, p.w, 6);
-    ctx.fillStyle = COLORS.grass;
-    ctx.fillRect(x, y, p.w, 6);
-    ctx.fillStyle = COLORS.grassDark;
-    ctx.fillRect(x, y + 6, p.w, 2);
-  }
+          if (GameState.current === "LEVEL_SELECT") {
+            const prevSelect = levelSelectIndex;
+            if (leftPressedNow() && levelSelectIndex > 0) {
+              levelSelectIndex--;
+            } else if (
+              rightPressedNow() &&
+              levelSelectIndex < maxLevelUnlocked
+            ) {
+              levelSelectIndex++;
+            }
+            if (levelSelectIndex !== prevSelect) centerLevelSelectCamera(false);
+            if (confirmPressedNow() && levelSelectIndex <= maxLevelUnlocked) {
+              loadLevel(levelSelectIndex);
+              placePlayerAtSpawn();
+              initCamera();
+              GameState.transitionTo("PLAY");
+              return;
+            }
+            // Particles/shake decay so the screen still feels alive.
+            updateLevelSelectCamera();
+            updateParticles();
+            if (shakeFrames > 0) shakeFrames--;
+            return;
+          }
 
-  function drawGoal() {
-    const x = goal.x - cam.x, y = goal.y - cam.y;
-    ctx.fillStyle = COLORS.goalPole;
-    ctx.fillRect(x, y, goal.w, goal.h);
-    const cellW = 8, cellH = 8;
-    for (let row = 0; row < 4; row++) {
-      for (let col = 0; col < 6; col++) {
-        ctx.fillStyle = ((row + col) & 1) ? COLORS.goalFlagA : COLORS.goalFlagB;
-        ctx.fillRect(x + goal.w + col * cellW, y + 4 + row * cellH, cellW, cellH);
-      }
-    }
-  }
+          if (GameState.current === "DEAD") {
+            if (confirmPressedNow()) {
+              GameState.transitionTo("PLAY");
+            }
+            // Particles still animate under the overlay for a little life.
+            updateParticles();
+            if (shakeFrames > 0) shakeFrames--;
+            return;
+          }
 
-  function drawPickup(pk, t) {
-    if (pk.taken) return;
-    const x = pk.x - cam.x, y = pk.y - cam.y;
-    if (x + pk.w < 0 || x > W) return;
-    // Pulse size a bit to draw the eye.
-    const pulse = Math.sin(t * 0.15 + pk.x * 0.01) * 1.5;
-    const w = pk.w + pulse, h = pk.h + pulse;
-    const cx = x + pk.w / 2 - w / 2;
-    const cy = y + pk.h / 2 - h / 2;
-    ctx.fillStyle = COLORS.coinDark;
-    ctx.fillRect(cx, cy, w, h);
-    ctx.fillStyle = COLORS.coin;
-    ctx.fillRect(cx + 2, cy + 2, w - 4, h - 4);
-  }
+          if (GameState.current === "WIN") {
+            if (confirmPressedNow()) {
+              levelSelectIndex = maxLevelUnlocked;
+              GameState.transitionTo("LEVEL_SELECT");
+            }
+            updateParticles();
+            if (shakeFrames > 0) shakeFrames--;
+            return;
+          }
 
-  function drawEnemy(e) {
-    if (!e.alive) return;
-    const x = e.x - cam.x, y = e.y - cam.y;
-    if (x + e.w < 0 || x > W) return;
-    // Body
-    ctx.fillStyle = COLORS.enemyBody;
-    ctx.fillRect(x, y + 4, e.w, e.h - 6);
-    // Darker belly
-    ctx.fillStyle = COLORS.enemyDark;
-    ctx.fillRect(x, y + e.h - 4, e.w, 4);
-    // Feet
-    ctx.fillStyle = COLORS.enemyFoot;
-    ctx.fillRect(x + 2,         y + e.h - 2, 6, 2);
-    ctx.fillRect(x + e.w - 8,   y + e.h - 2, 6, 2);
-    // Single eye, faces direction of travel
-    ctx.fillStyle = '#FFF';
-    const ex = e.vx > 0 ? x + e.w - 10 : x + 4;
-    ctx.fillRect(ex, y + 6, 6, 6);
-    ctx.fillStyle = '#000';
-    ctx.fillRect(ex + (e.vx > 0 ? 3 : 0), y + 8, 3, 3);
-  }
+          // ---- PLAY state ----
 
-  function drawPlayer() {
-    // Visual squash/stretch — scale is applied around the feet so the player
-    // "sticks" to the ground when squashing.
-    let sx = 1, sy = 1;
-    if (player.squashT > 0) {
-      const k = player.squashT / 7;
-      sx = 1 + 0.25 * k;
-      sy = 1 - 0.25 * k;
-    } else if (player.stretchT > 0) {
-      const k = player.stretchT / 6;
-      sx = 1 - 0.12 * k;
-      sy = 1 + 0.18 * k;
-    }
+          // --- Horizontal movement ---
+          const accel = player.onGround ? MOVE_ACCEL : AIR_ACCEL;
+          if (isLeft() && !isRight()) {
+            player.vx -= accel;
+            player.facing = -1;
+          } else if (isRight() && !isLeft()) {
+            player.vx += accel;
+            player.facing = 1;
+          } else {
+            player.vx *= player.onGround ? FRICTION : AIR_FRICTION;
+            if (Math.abs(player.vx) < 0.05) player.vx = 0;
+          }
+          if (player.vx > MAX_RUN) player.vx = MAX_RUN;
+          if (player.vx < -MAX_RUN) player.vx = -MAX_RUN;
 
-    const drawW = player.w * sx;
-    const drawH = player.h * sy;
-    const x = player.x - cam.x + (player.w - drawW) / 2;
-    const y = player.y - cam.y + (player.h - drawH); // pin to feet
+          // --- Drop-through (Down + Jump on a one-way platform) ---
+          // Must check BEFORE the normal jump-buffer logic so the press is consumed.
+          const wantDropThrough =
+            player.onGround &&
+            player.groundPlatform &&
+            player.groundPlatform.type === "one-way" &&
+            ((jumpPressedNow() && isDown()) || dropPressedNow());
+          if (wantDropThrough) {
+            player.dropThrough = DROP_FRAMES;
+            player.onGround = false;
+            player.groundPlatform = null;
+            player.y += 2; // nudge below the platform top
+            // Consume the jump press so we don't also buffer a jump.
+            delete pressed["Space"];
+            delete pressed["ArrowUp"];
+            delete pressed["KeyW"];
+          }
 
-    if (playerSpriteReady) {
-      ctx.save();
-      if (player.facing < 0) {
-        ctx.translate(x + drawW, y);
-        ctx.scale(-1, 1);
-        ctx.drawImage(playerSprite, 0, 0, drawW, drawH);
-      } else {
-        ctx.drawImage(playerSprite, x, y, drawW, drawH);
-      }
-      ctx.restore();
-      return;
-    }
+          // --- Jump: buffering + coyote time ---
+          if (jumpPressedNow()) player.buffer = BUFFER_FRAMES;
 
-    // Pants (lower half)
-    ctx.fillStyle = COLORS.playerPants;
-    ctx.fillRect(x, y + drawH / 2, drawW, drawH / 2);
-    // Shirt (upper half, below helmet)
-    const helmetH = Math.max(6, drawH * 0.25);
-    ctx.fillStyle = COLORS.playerShirt;
-    ctx.fillRect(x, y + helmetH, drawW, drawH / 2 - helmetH);
-    // Helmet
-    ctx.fillStyle = COLORS.playerHelmet;
-    ctx.fillRect(x, y, drawW, helmetH);
-    // Eye
-    ctx.fillStyle = '#000';
-    const eyeX = player.facing > 0 ? x + drawW - 8 : x + 4;
-    ctx.fillRect(eyeX, y + helmetH + 2, 4, 4);
-  }
+          const canJump = player.onGround || player.coyote > 0;
+          if (player.buffer > 0 && canJump) {
+            player.vy = JUMP_VELOCITY;
+            player.onGround = false;
+            player.coyote = 0;
+            player.buffer = 0;
+            player.jumpCut = false;
+            player.stretchT = 6;
+            Sfx.jump();
+          }
 
-  function drawParticles() {
-    for (const p of particles) {
-      const px = p.x - cam.x, py = p.y - cam.y;
-      // Fade via alpha isn't worth a setter dance — use size drop-off instead.
-      const s = p.life < 6 ? Math.max(1, p.size - 1) : p.size;
-      ctx.fillStyle = p.color;
-      ctx.fillRect(px, py, s, s);
-    }
-  }
+          // Variable jump height (cut once per jump on release).
+          if (!jumpHeld() && player.vy < 0 && !player.jumpCut) {
+            player.vy *= JUMP_CUT;
+            player.jumpCut = true;
+          }
 
-  function drawHud() {
-    ctx.fillStyle = COLORS.hudBg;
-    ctx.fillRect(12, 12, 360, viewport.touch ? 116 : 96);
-    ctx.fillStyle = COLORS.hudText;
-    ctx.font = 'bold 18px "Courier New", monospace';
-    ctx.textBaseline = 'top';
-    ctx.textAlign = 'start';
-    ctx.fillText('SCORE: ' + score, 24, 20);
-    ctx.fillStyle = '#FFDD00';
-    ctx.fillText('LV ' + (currentLevelIndex + 1) + '/' + LEVELS.length + '  ' + (level.name || ''), 24, 42);
-    ctx.fillStyle = COLORS.hudText;
-    if (viewport.touch) {
-      ctx.fillText('Left half: drag to move / down', 24, 66);
-      ctx.fillText('Right half: tap or swipe jump  |  top-right pause', 24, 86);
-      ctx.fillText('Swipe down on right to drop through one-ways', 24, 106);
-    } else {
-      ctx.fillText('A/D move  SPACE jump', 24, 66);
-      ctx.fillText('S+SPACE drop  P pause', 24, 86);
-    }
+          // --- Gravity ---
+          player.vy += GRAVITY;
+          if (player.vy > MAX_FALL) player.vy = MAX_FALL;
 
-    if (viewport.touch && GameState.current !== 'DEAD' && GameState.current !== 'WIN') {
-      ctx.fillStyle = 'rgba(0,0,0,0.65)';
-      ctx.fillRect(W - 72, 12, 60, 60);
-      ctx.fillStyle = '#FFF';
-      ctx.fillRect(W - 54, 28, 8, 28);
-      ctx.fillRect(W - 38, 28, 8, 28);
-    }
+          const wasOnGround = player.onGround;
+          const prevVy = player.vy;
 
-    // Transient level-name banner — shown briefly after load.
-    if (bannerFrames > 0 && GameState.current === 'PLAY') {
-      // Fade in/out via a simple triangle over the banner lifetime.
-      const k = bannerFrames > 90 ? (110 - bannerFrames) / 20
-                                  : bannerFrames / 90;
-      ctx.globalAlpha = Math.max(0, Math.min(1, k));
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(0, H / 2 - 50, W, 80);
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#FFDD00';
-      ctx.font = 'bold 40px "Courier New", monospace';
-      ctx.fillText(bannerText, W / 2, H / 2 - 32);
-      ctx.textAlign = 'start';
-      ctx.globalAlpha = 1;
-    }
+          const collision = moveAndCollide();
 
-    const s = GameState.current;
-    if (s === 'DEAD' || s === 'WIN' || s === 'PAUSE') {
-      ctx.fillStyle = 'rgba(0,0,0,0.65)';
-      ctx.fillRect(0, 0, W, H);
-      ctx.textAlign = 'center';
-      ctx.font = 'bold 52px "Courier New", monospace';
-      if (s === 'DEAD') {
-        ctx.fillStyle = '#FF5555';
-        ctx.fillText('GAME OVER', W / 2, H / 2 - 50);
-      } else if (s === 'WIN') {
-        ctx.fillStyle = '#FFDD00';
-        ctx.fillText('YOU MADE IT!', W / 2, H / 2 - 50);
-      } else {
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillText('PAUSED', W / 2, H / 2 - 50);
-      }
-      ctx.fillStyle = '#FFF';
-      ctx.font = 'bold 20px "Courier New", monospace';
-      if (s === 'PAUSE') {
-        ctx.fillText(viewport.touch ? 'Tap the pause badge to resume' : 'Press P or ESC to resume', W / 2, H / 2 + 20);
-      } else {
-        ctx.fillText('Final score: ' + score, W / 2, H / 2 + 10);
-        ctx.fillText(viewport.touch ? 'Tap to play again' : 'Press R or SPACE to play again', W / 2, H / 2 + 42);
-      }
-      ctx.textAlign = 'start';
-    }
-  }
+          // React to collision events (this is why moveAndCollide returns them).
+          if (collision.landed && !wasOnGround) {
+            // Just landed this tick. Juice it.
+            player.squashT = 7;
+            Sfx.land();
+            spawnDust(player.x + player.w / 2, player.y + player.h - 1, 6);
+            // Hard landings shake a touch.
+            if (prevVy > 9) shake(4, 2);
+          }
+          if (collision.hitCeiling) {
+            Sfx.bonk();
+            shake(3, 2);
+          }
 
-  function drawRotateOverlay() {
-    ctx.fillStyle = 'rgba(0,0,0,0.82)';
-    ctx.fillRect(0, 0, W, H);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#FFDD00';
-    ctx.font = 'bold 54px "Courier New", monospace';
-    ctx.fillText('ROTATE DEVICE', W / 2, H / 2 - 48);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = 'bold 24px "Courier New", monospace';
-    ctx.fillText('Play in landscape on phones.', W / 2, H / 2 + 10);
-    ctx.font = 'bold 18px "Courier New", monospace';
-    ctx.fillText('Turn your device sideways to continue.', W / 2, H / 2 + 50);
-    ctx.textAlign = 'start';
-    ctx.textBaseline = 'top';
-  }
+          // Coyote time bookkeeping.
+          if (wasOnGround && !player.onGround && player.vy >= 0) {
+            player.coyote = COYOTE_FRAMES;
+          } else if (player.coyote > 0) {
+            player.coyote--;
+          }
+          if (player.buffer > 0) player.buffer--;
+          if (player.dropThrough > 0) player.dropThrough--;
+          if (player.squashT > 0) player.squashT--;
+          if (player.stretchT > 0) player.stretchT--;
 
-  let renderTick = 0;
-  function render() {
-    // Apply screen shake as a canvas translate for this frame only.
-    let ox = 0, oy = 0;
-    if (shakeFrames > 0) {
-      ox = (Math.random() * 2 - 1) * shakeMag;
-      oy = (Math.random() * 2 - 1) * shakeMag;
-    }
-    ctx.save();
-    ctx.translate(ox, oy);
+          // --- Pickups ---
+          for (const pk of level.pickups) {
+            if (pk.taken) continue;
+            if (aabb(player, pk)) {
+              pk.taken = true;
+              score += 100;
+              Sfx.pickup();
+              spawnDust(pk.x + pk.w / 2, pk.y + pk.h / 2, 4, COLORS.coin);
+            }
+          }
 
-    drawBackground();
-    if (level.decorations) {
-      for (const d of level.decorations) {
-        const dx = d.x - cam.x, dy = d.y - cam.y;
-        if (dx + d.w < 0 || dx > W) continue;
-        ctx.fillStyle = d.color;
-        ctx.fillRect(dx, dy, d.w, d.h);
-      }
-    }
-    for (const p of platforms) drawPlatform(p);
-    drawGoal();
-    for (const pk of level.pickups) drawPickup(pk, renderTick);
-    for (const e of level.enemies) drawEnemy(e);
-    drawPlayer();
-    drawParticles();
+          // --- Enemies ---
+          for (const e of level.enemies) {
+            if (!e.alive) continue;
+            e.x += e.vx;
+            if (e.x < e.minX) {
+              e.x = e.minX;
+              e.vx = -e.vx;
+            }
+            if (e.x + e.w > e.maxX) {
+              e.x = e.maxX - e.w;
+              e.vx = -e.vx;
+            }
 
-    ctx.restore();
-    drawHud();  // HUD stays fixed (no shake)
-    if (viewport.phonePortrait) drawRotateOverlay();
-    renderTick++;
-  }
+            if (aabb(player, e)) {
+              // Stomp: player is descending AND previous feet were above enemy top.
+              const prevFeet = player.y + player.h - player.vy;
+              if (player.vy > 0 && prevFeet <= e.y + 2) {
+                e.alive = false;
+                player.vy = JUMP_VELOCITY * STOMP_BOUNCE;
+                player.jumpCut = false;
+                player.stretchT = 6;
+                score += 200;
+                Sfx.stomp();
+                spawnDust(e.x + e.w / 2, e.y + e.h, 8, COLORS.enemyDark);
+                shake(3, 2);
+              } else {
+                GameState.transitionTo("DEAD");
+                return;
+              }
+            }
+          }
 
-  // ---------- GAME LOOP (fixed 60Hz physics, variable render) ----------
-  const TICK_MS = 1000 / 60;
-  let lastTime = 0;
-  let accumulator = 0;
+          // --- Score: furthest-right progress only ---
+          if (player.x > maxX) {
+            score += (player.x - maxX) | 0;
+            maxX = player.x;
+          }
 
-  function frame(now) {
-    if (!lastTime) lastTime = now;
-    accumulator += now - lastTime;
-    lastTime = now;
+          // --- Win / lose ---
+          // Touching the goal advances to the next level. If this was the final
+          // level, advanceLevel() transitions to WIN internally.
+          if (aabb(player, goal)) {
+            advanceLevel();
+            return;
+          }
+          if (player.y > level.deathY) {
+            GameState.transitionTo("DEAD");
+            return;
+          }
 
-    if (accumulator > TICK_MS * 10) accumulator = TICK_MS * 10;
+          // Particles, shake, banner tick.
+          updateParticles();
+          if (shakeFrames > 0) shakeFrames--;
+          if (bannerFrames > 0) bannerFrames--;
+        }
 
-    if (viewport.phonePortrait) {
-      accumulator = 0;
-      clearPressedInputs();
-      render();
-      requestAnimationFrame(frame);
-      return;
-    }
+        // ---------- CAMERA ----------
+        // Smoothed follow: X with look-ahead bias, Y locked to last grounded
+        // position so the camera doesn't bob mid-jump.
+        const cam = { x: 0, y: 0 };
+        let lastGroundY = 0;
 
-    while (accumulator >= TICK_MS) {
-      update();
-      updateCamera();  // camera in the fixed step so it's frame-rate-independent
-      advanceTouchState();
-      clearPressedInputs();
-      accumulator -= TICK_MS;
-    }
+        function initCamera() {
+          lastGroundY = player.y;
+          const targetY = lastGroundY - H * 0.7;
+          const maxY = level.camFloor - H;
+          const minY = Math.min(level.camCeiling, maxY);
+          cam.y = Math.max(minY, Math.min(targetY, maxY));
+          cam.x = Math.max(
+            0,
+            Math.min(player.x + player.w / 2 - W / 2, level.endX - W),
+          );
+        }
 
-    render();
-    requestAnimationFrame(frame);
-  }
+        function updateCamera() {
+          // Horizontal
+          const lookAhead = player.facing * 70;
+          const targetX = player.x + player.w / 2 - W / 2 + lookAhead;
+          cam.x += (targetX - cam.x) * 0.1;
+          if (cam.x < 0) cam.x = 0;
+          if (cam.x > level.endX - W) cam.x = level.endX - W;
 
-  GameState.transitionTo('PLAY');
-  requestAnimationFrame(frame);
-})();
-</script>
-</body>
+          // Vertical — only retarget when on ground to avoid jump bobbing.
+          if (player.onGround) lastGroundY = player.y;
+          const targetY = lastGroundY - H * 0.7;
+          cam.y += (targetY - cam.y) * 0.08;
+          const maxY = level.camFloor - H;
+          const minY = Math.min(level.camCeiling, maxY);
+          if (cam.y < minY) cam.y = minY;
+          if (cam.y > maxY) cam.y = maxY;
+        }
+
+        // ---------- RENDER ----------
+        function drawCloud(x, y, s) {
+          ctx.fillStyle = COLORS.cloud;
+          ctx.beginPath();
+          ctx.arc(x, y, 18 * s, 0, Math.PI * 2);
+          ctx.arc(x + 22 * s, y - 8 * s, 24 * s, 0, Math.PI * 2);
+          ctx.arc(x + 50 * s, y, 18 * s, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillRect(x - 2, y, 54 * s, 16 * s);
+          ctx.fillStyle = COLORS.cloudShade;
+          ctx.fillRect(x - 2, y + 12 * s, 54 * s, 4 * s);
+        }
+
+        // A far-off keep on the horizon: the place the trail is heading, and the
+        // only thing in the scene allowed to stay hazy purple.
+        function drawFarCastle(x, baseY, s) {
+          ctx.fillStyle = COLORS.castle;
+          ctx.fillRect(x + 30 * s, baseY - 52 * s, 60 * s, 52 * s);
+          for (let i = 0; i < 4; i++) {
+            ctx.fillRect(x + (32 + i * 15) * s, baseY - 60 * s, 9 * s, 9 * s);
+          }
+          for (const tx of [x, x + 96 * s]) {
+            ctx.fillRect(tx, baseY - 74 * s, 24 * s, 74 * s);
+            ctx.fillStyle = COLORS.castleDark;
+            ctx.beginPath();
+            ctx.moveTo(tx - 5 * s, baseY - 74 * s);
+            ctx.lineTo(tx + 12 * s, baseY - 98 * s);
+            ctx.lineTo(tx + 29 * s, baseY - 74 * s);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = COLORS.castle;
+          }
+          ctx.fillStyle = COLORS.castleDark;
+          ctx.fillRect(x + 52 * s, baseY - 26 * s, 16 * s, 26 * s);
+        }
+
+        function drawTree(x, baseY, s) {
+          ctx.fillStyle = "#5A3A20";
+          ctx.fillRect(x - 3 * s, baseY - 16 * s, 6 * s, 16 * s);
+          ctx.fillStyle = "#3F7F38";
+          ctx.beginPath();
+          ctx.arc(x, baseY - 30 * s, 16 * s, 0, Math.PI * 2);
+          ctx.arc(x - 13 * s, baseY - 22 * s, 11 * s, 0, Math.PI * 2);
+          ctx.arc(x + 13 * s, baseY - 22 * s, 11 * s, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        function drawShrub(x, y, w, h, color) {
+          ctx.fillStyle = color;
+          ctx.fillRect(x, y + h * 0.35, w, h * 0.65);
+          ctx.beginPath();
+          ctx.arc(x + w * 0.3, y + h * 0.4, w * 0.32, 0, Math.PI * 2);
+          ctx.arc(x + w * 0.72, y + h * 0.45, w * 0.28, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "rgba(255,255,255,0.22)";
+          ctx.fillRect(x + w * 0.2, y + h * 0.3, 3, 3);
+        }
+
+        function drawHillRow(offset, period, baseY, height, color) {
+          ctx.fillStyle = color;
+          for (let i = -1; i < Math.ceil(W / period) + 2; i++) {
+            const bx = offset + i * period;
+            ctx.beginPath();
+            ctx.moveTo(bx, baseY);
+            ctx.quadraticCurveTo(bx + period / 2, baseY - height, bx + period, baseY);
+            ctx.lineTo(bx + period, H);
+            ctx.lineTo(bx, H);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+
+        function drawBackground() {
+          if (!skyGradient) {
+            skyGradient = ctx.createLinearGradient(0, 0, 0, H);
+            skyGradient.addColorStop(0, COLORS.skyTop);
+            skyGradient.addColorStop(0.55, COLORS.skyMid);
+            skyGradient.addColorStop(1, COLORS.skyLow);
+          }
+          ctx.fillStyle = skyGradient;
+          ctx.fillRect(0, 0, W, H);
+
+          ctx.fillStyle = COLORS.sun;
+          ctx.beginPath();
+          ctx.arc(W * 0.76, 96, 54, 0, Math.PI * 2);
+          ctx.fill();
+
+          const cloudOff = -((cam.x * 0.12) % 520);
+          for (let i = -1; i < Math.ceil(W / 520) + 2; i++) {
+            const bx = cloudOff + i * 520;
+            drawCloud(bx + 40, 74, 1);
+            drawCloud(bx + 300, 140, 0.7);
+          }
+
+          const keepOff = -((cam.x * 0.2) % 1600);
+          for (let i = -1; i < Math.ceil(W / 1600) + 2; i++) {
+            drawFarCastle(keepOff + i * 1600 + 620, H - 168, 0.85);
+          }
+
+          const farOff = -((cam.x * 0.2) % 460);
+          drawHillRow(farOff, 460, H - 150, 92, COLORS.hillFar);
+
+          const nearOff = -((cam.x * 0.45) % 340);
+          drawHillRow(nearOff, 340, H - 84, 104, COLORS.hillNear);
+          for (let i = -1; i < Math.ceil(W / 340) + 2; i++) {
+            const bx = nearOff + i * 340;
+            drawTree(bx + 170, H - 134, 1);
+            drawTree(bx + 246, H - 118, 0.72);
+            drawTree(bx + 96, H - 118, 0.66);
+          }
+
+          // --- Bramble pit ---
+          // Drawn behind platforms. Platforms extend to the bottom of the canvas so
+          // they cover this band wherever they exist — gaps reveal the thorns.
+          const bandTop = H - 50;
+          ctx.fillStyle = COLORS.pitBand;
+          ctx.fillRect(0, bandTop, W, H - bandTop);
+          ctx.fillStyle = COLORS.bramble;
+          for (let i = 0; i < W + 20; i += 18) {
+            ctx.beginPath();
+            ctx.moveTo(i, bandTop);
+            ctx.lineTo(i + 9, bandTop - 18);
+            ctx.lineTo(i + 18, bandTop);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillRect(i + 7, bandTop - 6, 4, 4);
+          }
+        }
+
+        function drawPlatform(p) {
+          const x = p.x - cam.x,
+            y = p.y - cam.y;
+          if (x + p.w < 0 || x > W) return;
+          if (p.type === "one-way") {
+            // A plank walkway: you can hop up through it, so it should look like
+            // something you could hop up through.
+            ctx.fillStyle = COLORS.plank;
+            ctx.fillRect(x, y, p.w, 7);
+            ctx.fillStyle = COLORS.plankDark;
+            ctx.fillRect(x, y + 7, p.w, 3);
+            for (let dx = 6; dx < p.w - 4; dx += 22) {
+              ctx.fillRect(x + dx, y, 2, 7);
+            }
+            return;
+          }
+          ctx.fillStyle = COLORS.rock;
+          ctx.fillRect(x, y, p.w, p.h);
+          ctx.fillStyle = COLORS.rockDark;
+          for (let dx = 4; dx < p.w - 6; dx += 26) {
+            const dy = 14 + ((dx * 7) % 3) * 8;
+            if (dy < p.h - 6) ctx.fillRect(x + dx, y + dy, 10, 5);
+          }
+          ctx.fillStyle = COLORS.rockDark;
+          ctx.fillRect(x, y + p.h - 6, p.w, 6);
+          ctx.fillStyle = COLORS.grass;
+          ctx.fillRect(x, y, p.w, 7);
+          ctx.fillStyle = COLORS.grassDark;
+          ctx.fillRect(x, y + 7, p.w, 3);
+          ctx.fillStyle = COLORS.grass;
+          for (let dx = 5; dx < p.w - 3; dx += 17) {
+            ctx.fillRect(x + dx, y - 3, 3, 3);
+          }
+        }
+
+        function drawGoal() {
+          const x = goal.x - cam.x,
+            y = goal.y - cam.y;
+          ctx.fillStyle = COLORS.goalPole;
+          ctx.fillRect(x, y, goal.w, goal.h);
+          ctx.fillStyle = COLORS.goalFlagB;
+          ctx.fillRect(x - 2, y - 6, goal.w + 4, 6);
+          const wave = Math.sin(renderTick * 0.12) * 3;
+          ctx.fillStyle = COLORS.goalFlagA;
+          ctx.beginPath();
+          ctx.moveTo(x + goal.w, y + 2);
+          ctx.lineTo(x + goal.w + 46, y + 16 + wave);
+          ctx.lineTo(x + goal.w, y + 30);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = COLORS.goalFlagB;
+          ctx.fillRect(x + goal.w, y + 14, 30 + wave, 4);
+        }
+
+        function drawPickup(pk, t) {
+          if (pk.taken) return;
+          const x = pk.x - cam.x,
+            y = pk.y - cam.y;
+          if (x + pk.w < 0 || x > W) return;
+          // Pulse size a bit to draw the eye.
+          const pulse = Math.sin(t * 0.15 + pk.x * 0.01) * 1.5;
+          const w = pk.w + pulse,
+            h = pk.h + pulse;
+          const cx = x + pk.w / 2 - w / 2;
+          const cy = y + pk.h / 2 - h / 2;
+          ctx.fillStyle = COLORS.coinDark;
+          ctx.fillRect(cx, cy, w, h);
+          ctx.fillStyle = COLORS.coin;
+          ctx.fillRect(cx + 2, cy + 2, w - 4, h - 4);
+          ctx.fillStyle = "rgba(255,255,255,0.75)";
+          ctx.fillRect(cx + 3, cy + 3, 3, 3);
+        }
+
+        function drawEnemy(e) {
+          if (!e.alive) return;
+          const x = e.x - cam.x,
+            y = e.y - cam.y;
+          if (x + e.w < 0 || x > W) return;
+          // Stem
+          ctx.fillStyle = COLORS.enemyFoot;
+          ctx.fillRect(x + 3, y + e.h * 0.45, e.w - 6, e.h * 0.55);
+          // Cap
+          ctx.fillStyle = COLORS.enemyBody;
+          ctx.fillRect(x, y + 4, e.w, e.h * 0.45);
+          ctx.fillRect(x + 3, y + 1, e.w - 6, 4);
+          ctx.fillStyle = COLORS.enemyDark;
+          ctx.fillRect(x, y + e.h * 0.45, e.w, 3);
+          // Cap spots
+          ctx.fillStyle = COLORS.enemyFoot;
+          ctx.fillRect(x + 4, y + 6, 4, 4);
+          ctx.fillRect(x + e.w - 9, y + 9, 3, 3);
+          // Eyes on the stem, facing the way it walks
+          ctx.fillStyle = "#3A2412";
+          const ex = e.vx > 0 ? x + e.w - 9 : x + 5;
+          ctx.fillRect(ex, y + e.h * 0.62, 3, 4);
+          ctx.fillRect(ex + (e.vx > 0 ? -6 : 6), y + e.h * 0.62, 3, 4);
+        }
+
+        function drawPlayer() {
+          // Visual squash/stretch — scale is applied around the feet so the player
+          // "sticks" to the ground when squashing.
+          let sx = 1,
+            sy = 1;
+          if (player.squashT > 0) {
+            const k = player.squashT / 7;
+            sx = 1 + 0.25 * k;
+            sy = 1 - 0.25 * k;
+          } else if (player.stretchT > 0) {
+            const k = player.stretchT / 6;
+            sx = 1 - 0.12 * k;
+            sy = 1 + 0.18 * k;
+          }
+
+          const drawW = player.w * sx;
+          const drawH = player.h * sy;
+          const x = player.x - cam.x + (player.w - drawW) / 2;
+          const y = player.y - cam.y + (player.h - drawH); // pin to feet
+
+          if (playerSpriteReady) {
+            ctx.save();
+            if (player.facing < 0) {
+              ctx.translate(x + drawW, y);
+              ctx.scale(-1, 1);
+              ctx.drawImage(playerSprite, 0, 0, drawW, drawH);
+            } else {
+              ctx.drawImage(playerSprite, x, y, drawW, drawH);
+            }
+            ctx.restore();
+            return;
+          }
+
+          // Pants (lower half)
+          ctx.fillStyle = COLORS.playerPants;
+          ctx.fillRect(x, y + drawH / 2, drawW, drawH / 2);
+          // Shirt (upper half, below helmet)
+          const helmetH = Math.max(6, drawH * 0.25);
+          ctx.fillStyle = COLORS.playerShirt;
+          ctx.fillRect(x, y + helmetH, drawW, drawH / 2 - helmetH);
+          // Helmet
+          ctx.fillStyle = COLORS.playerHelmet;
+          ctx.fillRect(x, y, drawW, helmetH);
+          // Eye
+          ctx.fillStyle = "#000";
+          const eyeX = player.facing > 0 ? x + drawW - 8 : x + 4;
+          ctx.fillRect(eyeX, y + helmetH + 2, 4, 4);
+        }
+
+        function drawParticles() {
+          for (const p of particles) {
+            const px = p.x - cam.x,
+              py = p.y - cam.y;
+            // Fade via alpha isn't worth a setter dance — use size drop-off instead.
+            const s = p.life < 6 ? Math.max(1, p.size - 1) : p.size;
+            ctx.fillStyle = p.color;
+            ctx.fillRect(px, py, s, s);
+          }
+        }
+
+        // The play HUD borrows the map's carved-parchment plate and pixel face so
+        // the two screens read as one game.
+        function drawHud() {
+          const lines = viewport.touch
+            ? [
+                "LEFT HALF  DRAG TO MOVE",
+                "RIGHT HALF  TAP OR SWIPE TO JUMP",
+                "SWIPE DOWN  DROP THROUGH PLANKS",
+              ]
+            : ["A/D  MOVE     SPACE  JUMP", "S+SPACE  DROP     P  PAUSE"];
+          const plateW = 328;
+          const plateH = 52 + lines.length * 15;
+          ctx.fillStyle = "rgba(30,18,40,0.28)";
+          ctx.fillRect(16, 17, plateW, plateH);
+          ctx.fillStyle = COLORS.parchmentEdge;
+          ctx.fillRect(12, 12, plateW, plateH);
+          ctx.fillStyle = COLORS.parchment;
+          ctx.fillRect(15, 15, plateW - 6, plateH - 6);
+
+          ctx.fillStyle = COLORS.coinDark;
+          ctx.fillRect(26, 25, 12, 12);
+          ctx.fillStyle = COLORS.coin;
+          ctx.fillRect(28, 27, 8, 8);
+          pxText(String(score), 46, 26, 2, COLORS.ink);
+          pxText(
+            (level.name || "") +
+              "   " +
+              (currentLevelIndex + 1) +
+              "/" +
+              LEVELS.length,
+            26,
+            46,
+            2,
+            COLORS.inkSoft,
+          );
+
+          ctx.save();
+          ctx.fillStyle = "rgba(58,36,18,0.72)";
+          ctx.font = 'bold 11px "Courier New", monospace';
+          ctx.textBaseline = "top";
+          ctx.textAlign = "start";
+          lines.forEach((line, i) => ctx.fillText(line, 26, 66 + i * 15));
+          ctx.restore();
+
+          if (
+            viewport.touch &&
+            GameState.current !== "DEAD" &&
+            GameState.current !== "WIN"
+          ) {
+            ctx.fillStyle = COLORS.parchmentEdge;
+            ctx.fillRect(W - 72, 12, 60, 60);
+            ctx.fillStyle = COLORS.parchment;
+            ctx.fillRect(W - 69, 15, 54, 54);
+            ctx.fillStyle = COLORS.ink;
+            ctx.fillRect(W - 54, 28, 8, 28);
+            ctx.fillRect(W - 38, 28, 8, 28);
+          }
+
+          // Transient level-name banner — shown briefly after load.
+          if (bannerFrames > 0 && GameState.current === "PLAY") {
+            // Fade in/out via a simple triangle over the banner lifetime.
+            const k =
+              bannerFrames > 90 ? (110 - bannerFrames) / 20 : bannerFrames / 90;
+            ctx.globalAlpha = Math.max(0, Math.min(1, k));
+            const ribbonW = Math.max(pxWidth(bannerText, 5) + 96, 320);
+            const ribbonH = 88;
+            const ribbonX = Math.round((W - ribbonW) / 2);
+            const ribbonY = H / 2 - 54;
+            ctx.fillStyle = "rgba(30,18,40,0.35)";
+            ctx.fillRect(ribbonX + 6, ribbonY + 7, ribbonW, ribbonH);
+            ctx.fillStyle = COLORS.parchmentEdge;
+            ctx.fillRect(ribbonX, ribbonY, ribbonW, ribbonH);
+            ctx.fillStyle = COLORS.parchment;
+            ctx.fillRect(ribbonX + 4, ribbonY + 4, ribbonW - 8, ribbonH - 8);
+            ctx.fillStyle = COLORS.parchmentEdge;
+            ctx.fillRect(ribbonX + 4, ribbonY + 26, ribbonW - 8, 2);
+            pxText(bannerEyebrow, W / 2, ribbonY + 12, 2, COLORS.inkSoft, {
+              align: "center",
+            });
+            pxText(bannerText, W / 2, ribbonY + 40, 5, COLORS.ink, {
+              align: "center",
+            });
+            ctx.textAlign = "start";
+            ctx.globalAlpha = 1;
+          }
+
+          const s = GameState.current;
+          if (s === "DEAD" || s === "WIN" || s === "PAUSE") {
+            ctx.fillStyle = "rgba(34,20,46,0.72)";
+            ctx.fillRect(0, 0, W, H);
+            ctx.textAlign = "center";
+            if (s === "DEAD") {
+              pxText("TRY AGAIN", W / 2, H / 2 - 76, 7, "#FF9DC4", {
+                align: "center",
+                shadow: "rgba(20,10,28,0.85)",
+                shadowOffset: 3,
+              });
+            } else if (s === "WIN") {
+              pxText("YOU MADE IT", W / 2, H / 2 - 76, 7, COLORS.coin, {
+                align: "center",
+                shadow: "rgba(20,10,28,0.85)",
+                shadowOffset: 3,
+              });
+            } else {
+              pxText("PAUSED", W / 2, H / 2 - 76, 7, COLORS.parchment, {
+                align: "center",
+                shadow: "rgba(20,10,28,0.85)",
+                shadowOffset: 3,
+              });
+            }
+            ctx.fillStyle = COLORS.hudText;
+            ctx.font = 'bold 20px "Courier New", monospace';
+            if (s === "PAUSE") {
+              ctx.fillText(
+                viewport.touch
+                  ? "Tap the pause badge to resume"
+                  : "Press P or ESC to resume",
+                W / 2,
+                H / 2 + 20,
+              );
+              if (!viewport.touch) {
+                ctx.fillText(
+                  "Press Q to quit to level select",
+                  W / 2,
+                  H / 2 + 50,
+                );
+              }
+            } else {
+              ctx.fillText("Coins gathered: " + score, W / 2, H / 2 + 10);
+              const actionText =
+                s === "WIN"
+                  ? viewport.touch
+                    ? "Tap to return to the map"
+                    : "Press ENTER or SPACE for the map"
+                  : viewport.touch
+                    ? "Tap to retry"
+                    : "Press R or SPACE to retry";
+              ctx.fillText(actionText, W / 2, H / 2 + 42);
+            }
+            ctx.textAlign = "start";
+          }
+        }
+
+        // ---------- LEVEL-SELECT ART ----------
+        // The map is staged as a lit diorama: a finite island of land floating in
+        // dusk, so the trail reads as a composed place instead of an endless field
+        // of grass tiles. Accents are the princess's own colors — crown gold and
+        // dress pink — so the map belongs to her and not to a generic UI kit.
+        const LS_THEME = {
+          voidTop: "#3A2160",
+          voidBottom: "#1B1030",
+          duskHillFar: "#412C68",
+          duskHillNear: "#2B1C4B",
+          glow: "rgba(255,206,120,0.20)",
+          soilTop: "#6B4220",
+          soilFace: "#4A2C13",
+          soilSide: "#33200F",
+          trailFill: "#F2DCA4",
+          trailEdge: "#A8763A",
+          trailEdgeCold: "#6E5A3E",
+          trailFillCold: "#B7A47E",
+          trailShadow: "rgba(12,6,24,0.45)",
+          trailDust: "rgba(255,214,132,0.55)",
+          parchment: "#F6E6BE",
+          parchmentDark: "#D9BF8C",
+          ink: "#3A2412",
+          royal: "#E8368F",
+          royalDark: "#9C1B58",
+          gold: "#FFC531",
+          goldDark: "#B57C0E",
+          cream: "#FFF3D6",
+          creamDim: "rgba(255,243,214,0.55)",
+          ground: "#6aa257",
+          groundDark: "#548846",
+          nodeWood: "#f1d9a0",
+          nodeBark: "#7a4f2b",
+        };
+        const LS_MAP = {
+          tileW: 104,
+          tileH: 52,
+          groundTileW: 136,
+          nodeW: 112,
+          centerX: W / 2,
+          centerY: H / 2 + 4,
+          cameraEase: 0.16,
+          dragDeadzone: 8,
+          islandRadius: 2.7,
+          cliffDepth: 30,
+          fitPadX: 150,
+          fitPadY: 120,
+        };
+
+        // 5x7 display face. A system font would break the game's pixel grid, and
+        // this stays crisp and offline at any size. Courier is kept for the small
+        // utility line only, so the two roles never blur together.
+        const PX_GLYPHS = {
+          A: [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+          B: [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],
+          C: [0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e],
+          D: [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e],
+          E: [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
+          F: [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
+          G: [0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f],
+          H: [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+          I: [0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e],
+          J: [0x01, 0x01, 0x01, 0x01, 0x01, 0x11, 0x0e],
+          K: [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+          L: [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f],
+          M: [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
+          N: [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+          O: [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+          P: [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
+          Q: [0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d],
+          R: [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
+          S: [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
+          T: [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+          U: [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+          V: [0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04],
+          W: [0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11],
+          X: [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11],
+          Y: [0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04],
+          Z: [0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f],
+          0: [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
+          1: [0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e],
+          2: [0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f],
+          3: [0x1f, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0e],
+          4: [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
+          5: [0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e],
+          6: [0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e],
+          7: [0x1f, 0x01, 0x02, 0x04, 0x04, 0x04, 0x04],
+          8: [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
+          9: [0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c],
+          "-": [0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00],
+          "/": [0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],
+          ".": [0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c],
+          "!": [0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04],
+          "?": [0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],
+          " ": [0, 0, 0, 0, 0, 0, 0],
+        };
+        const PX_W = 5,
+          PX_H = 7;
+
+        const lsReduceMotion =
+          typeof matchMedia === "function" &&
+          matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+        function pxWidth(text, scale) {
+          return text.length ? (text.length * (PX_W + 1) - 1) * scale : 0;
+        }
+
+        function pxBlit(text, x, y, scale, color) {
+          ctx.fillStyle = color;
+          let cx = x;
+          for (const ch of String(text).toUpperCase()) {
+            const glyph = PX_GLYPHS[ch];
+            if (glyph) {
+              for (let r = 0; r < PX_H; r++) {
+                const bits = glyph[r];
+                if (!bits) continue;
+                for (let c = 0; c < PX_W; c++) {
+                  if (bits & (1 << (PX_W - 1 - c))) {
+                    ctx.fillRect(cx + c * scale, y + r * scale, scale, scale);
+                  }
+                }
+              }
+            }
+            cx += (PX_W + 1) * scale;
+          }
+        }
+
+        // y is the cap line (top of the glyph box); height is always PX_H * scale.
+        function pxText(text, x, y, scale, color, opts = {}) {
+          const w = pxWidth(text, scale);
+          const sx = Math.round(
+            opts.align === "center"
+              ? x - w / 2
+              : opts.align === "right"
+                ? x - w
+                : x,
+          );
+          const sy = Math.round(y);
+          if (opts.outline) {
+            for (const [ox, oy] of [
+              [-scale, 0],
+              [scale, 0],
+              [0, -scale],
+              [0, scale],
+            ]) {
+              pxBlit(text, sx + ox, sy + oy, scale, opts.outline);
+            }
+          }
+          if (opts.shadow) {
+            pxBlit(text, sx, sy + (opts.shadowOffset || scale), scale, opts.shadow);
+          }
+          pxBlit(text, sx, sy, scale, color);
+          return w;
+        }
+
+        function pxIcon(rows, x, y, scale, color) {
+          ctx.fillStyle = color;
+          for (let r = 0; r < rows.length; r++) {
+            const row = rows[r];
+            for (let c = 0; c < row.length; c++) {
+              if (row[c] !== " ") {
+                ctx.fillRect(x + c * scale, y + r * scale, scale, scale);
+              }
+            }
+          }
+        }
+
+        const PX_CROWN = ["# # #", "#####", "#####"];
+        const PX_LOCK = [" ### ", "#   #", "#####", "## ##", "#####"];
+
+        function lsRoundedPath(x, y, w, h, r) {
+          ctx.beginPath();
+          ctx.moveTo(x + r, y);
+          ctx.lineTo(x + w - r, y);
+          ctx.arcTo(x + w, y, x + w, y + r, r);
+          ctx.lineTo(x + w, y + h - r);
+          ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+          ctx.lineTo(x + r, y + h);
+          ctx.arcTo(x, y + h, x, y + h - r, r);
+          ctx.lineTo(x, y + r);
+          ctx.arcTo(x, y, x + r, y, r);
+          ctx.closePath();
+        }
+
+        // Carved plaque: dark bevel under a parchment face, no border radius, so
+        // the HUD reads as part of the world rather than a web card.
+        function lsPlaque(x, y, w, h, fill, edge) {
+          ctx.fillStyle = "rgba(10,5,20,0.45)";
+          ctx.fillRect(x + 4, y + 5, w, h);
+          ctx.fillStyle = edge;
+          ctx.fillRect(x, y, w, h);
+          ctx.fillStyle = fill;
+          ctx.fillRect(x + 3, y + 3, w - 6, h - 6);
+        }
+
+        function lsNoise(n) {
+          const s = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
+          return s - Math.floor(s);
+        }
+
+        function isoToWorld(gx, gy, z = 0) {
+          return {
+            x: ((gx - gy) * LS_MAP.tileW) / 2,
+            y: ((gx + gy) * LS_MAP.tileH) / 2 - z,
+          };
+        }
+
+        function worldToGrid(wx, wy) {
+          const a = wx / (LS_MAP.tileW / 2);
+          const b = wy / (LS_MAP.tileH / 2);
+          return {
+            gx: (a + b) / 2,
+            gy: (b - a) / 2,
+          };
+        }
+
+        function worldToScreen(wx, wy) {
+          return {
+            x: wx - levelSelectCamera.x + LS_MAP.centerX,
+            y: wy - levelSelectCamera.y + LS_MAP.centerY,
+          };
+        }
+
+        function isoToScreen(gx, gy, z = 0) {
+          const world = isoToWorld(gx, gy, z);
+          return worldToScreen(world.x, world.y);
+        }
+
+        function levelGridPoint(index) {
+          const bend = Math.round(Math.sin(index * 1.15) * 2);
+          return {
+            gx: index * 1.45 + bend * 0.25,
+            gy: -index * 1.45 + bend * 0.75,
+          };
+        }
+
+        function levelWorldPoint(index) {
+          const p = levelGridPoint(index);
+          return isoToWorld(p.gx, p.gy);
+        }
+
+        // The land is only the ground near the trail. Cached because the trail
+        // never moves; the edge is jittered so the coastline is not a clean arc.
+        const lsIslandCache = new Map();
+        let lsTrailSamples = null;
+
+        function trailSamples() {
+          if (lsTrailSamples) return lsTrailSamples;
+          const pts = [];
+          for (let i = 0; i < LEVELS.length; i++) {
+            const a = levelGridPoint(i);
+            pts.push(a);
+            if (i === LEVELS.length - 1) break;
+            const b = levelGridPoint(i + 1);
+            for (let t = 0.2; t < 1; t += 0.2) {
+              pts.push({
+                gx: a.gx + (b.gx - a.gx) * t,
+                gy: a.gy + (b.gy - a.gy) * t,
+              });
+            }
+          }
+          lsTrailSamples = pts;
+          return pts;
+        }
+
+        function baseIslandTile(gx, gy) {
+          const key = gx + ":" + gy;
+          const hit = lsIslandCache.get(key);
+          if (hit !== undefined) return hit;
+          let best = Infinity;
+          for (const p of trailSamples()) {
+            const ahead = gx + gy - (p.gx + p.gy);
+            const d =
+              Math.hypot(gx - p.gx, gy - p.gy) * (ahead > 0 ? 1.3 : 0.92);
+            if (d < best) best = d;
+          }
+          const jitter = (lsNoise(gx * 12.9 + gy * 78.2) - 0.5) * 0.5;
+          const on = best <= LS_MAP.islandRadius + jitter;
+          lsIslandCache.set(key, on);
+          return on;
+        }
+
+        // A tile clinging on by one corner reads as a rendering mistake, so the
+        // coastline keeps only land that has neighbours to hold on to.
+        const lsIslandSmoothed = new Map();
+        function isIslandTile(gx, gy) {
+          const key = gx + ":" + gy;
+          const hit = lsIslandSmoothed.get(key);
+          if (hit !== undefined) return hit;
+          let on = baseIslandTile(gx, gy);
+          if (on) {
+            const n =
+              baseIslandTile(gx + 1, gy) +
+              baseIslandTile(gx - 1, gy) +
+              baseIslandTile(gx, gy + 1) +
+              baseIslandTile(gx, gy - 1);
+            on = n >= 2;
+          }
+          lsIslandSmoothed.set(key, on);
+          return on;
+        }
+
+        function centerLevelSelectCamera(immediate = false) {
+          const fit = lsFitTarget();
+          const p = fit || levelWorldPoint(levelSelectIndex);
+          levelSelectCamera.targetX = p.x;
+          levelSelectCamera.targetY = p.y;
+          if (immediate || !levelSelectCamera.initialized) {
+            levelSelectCamera.x = p.x;
+            levelSelectCamera.y = p.y;
+            levelSelectCamera.initialized = true;
+          }
+        }
+
+        // When the whole island fits on screen it is framed once and held still —
+        // a small map should be a composition, not a viewport that drifts.
+        let lsFitCache;
+        function lsFitTarget() {
+          if (lsFitCache !== undefined) return lsFitCache;
+          let minX = Infinity,
+            maxX = -Infinity,
+            minY = Infinity,
+            maxY = -Infinity;
+          for (let i = 0; i < LEVELS.length; i++) {
+            const p = levelWorldPoint(i);
+            minX = Math.min(minX, p.x);
+            maxX = Math.max(maxX, p.x);
+            minY = Math.min(minY, p.y);
+            maxY = Math.max(maxY, p.y);
+          }
+          const spanX = maxX - minX + LS_MAP.fitPadX * 2;
+          const spanY = maxY - minY + LS_MAP.fitPadY * 2;
+          lsFitCache =
+            spanX <= W - 60 && spanY <= H - 150
+              ? { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
+              : null;
+          return lsFitCache;
+        }
+
+        function updateLevelSelectCamera() {
+          if (levelSelectCamera.dragging) return;
+          levelSelectCamera.x +=
+            (levelSelectCamera.targetX - levelSelectCamera.x) *
+            LS_MAP.cameraEase;
+          levelSelectCamera.y +=
+            (levelSelectCamera.targetY - levelSelectCamera.y) *
+            LS_MAP.cameraEase;
+        }
+
+        function beginLevelSelectPointer(e, point) {
+          return {
+            role: "level-select",
+            id: e.pointerId,
+            x: point.x,
+            y: point.y,
+            startX: point.x,
+            startY: point.y,
+            cameraStartX: levelSelectCamera.x,
+            cameraStartY: levelSelectCamera.y,
+            moved: false,
+          };
+        }
+
+        function updateLevelSelectPointer(state) {
+          const dx = state.x - state.startX;
+          const dy = state.y - state.startY;
+          if (Math.hypot(dx, dy) >= LS_MAP.dragDeadzone) {
+            state.moved = true;
+            levelSelectCamera.dragging = true;
+          }
+          if (!state.moved) return;
+          levelSelectCamera.x = state.cameraStartX - dx;
+          levelSelectCamera.y = state.cameraStartY - dy;
+          levelSelectCamera.targetX = levelSelectCamera.x;
+          levelSelectCamera.targetY = levelSelectCamera.y;
+        }
+
+        function finishLevelSelectPointer(state) {
+          levelSelectCamera.dragging = false;
+          if (state.moved) {
+            centerLevelSelectCamera(false);
+            return;
+          }
+          if (
+            levelSelectPlayArea &&
+            state.x >= levelSelectPlayArea.x &&
+            state.x <= levelSelectPlayArea.x + levelSelectPlayArea.w &&
+            state.y >= levelSelectPlayArea.y &&
+            state.y <= levelSelectPlayArea.y + levelSelectPlayArea.h
+          ) {
+            fireTouchConfirm();
+            return;
+          }
+          const hit = levelSelectHitAreas.find((h) => {
+            const dx = state.x - h.x;
+            const dy = state.y - h.y;
+            return dx * dx + dy * dy <= h.r * h.r;
+          });
+          if (!hit || hit.index > maxLevelUnlocked) return;
+          if (hit.index === levelSelectIndex) {
+            fireTouchConfirm();
+            return;
+          }
+          levelSelectIndex = hit.index;
+          centerLevelSelectCamera(false);
+        }
+
+        function lsDrawAtlasFrame(
+          name,
+          sx,
+          sy,
+          dispW,
+          anchorY = 1,
+          alpha = 1,
+          filter = "saturate(0.94) contrast(0.97) brightness(0.98)",
+        ) {
+          const r = FOREST_ATLAS[name];
+          if (!r || !forestSheetReady) return null;
+          const dispH = dispW * (r.sh / r.sw);
+          if (
+            sx + dispW / 2 < -120 ||
+            sx - dispW / 2 > W + 120 ||
+            sy + dispH < -120 ||
+            sy - dispH > H + 120
+          ) {
+            return {
+              dx: sx - dispW / 2,
+              dy: sy - dispH * anchorY,
+              dw: dispW,
+              dh: dispH,
+            };
+          }
+          ctx.save();
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
+          ctx.globalAlpha = alpha;
+          ctx.filter = filter;
+          ctx.drawImage(
+            forestSheet,
+            r.sx,
+            r.sy,
+            r.sw,
+            r.sh,
+            sx - dispW / 2,
+            sy - dispH * anchorY,
+            dispW,
+            dispH,
+          );
+          ctx.restore();
+          return {
+            dx: sx - dispW / 2,
+            dy: sy - dispH * anchorY,
+            dw: dispW,
+            dh: dispH,
+          };
+        }
+
+        function lsGroundFrame(gx, gy) {
+          const n = lsNoise(gx * 31.3 + gy * 17.9);
+          if (n > 0.91) return "grassFlowers";
+          if (n > 0.68) return "grassDark";
+          return "grass";
+        }
+
+        function drawIsoDiamondTile(screen, fill) {
+          ctx.fillStyle = fill;
+          ctx.beginPath();
+          ctx.moveTo(screen.x, screen.y - LS_MAP.tileH / 2);
+          ctx.lineTo(screen.x + LS_MAP.tileW / 2, screen.y);
+          ctx.lineTo(screen.x, screen.y + LS_MAP.tileH / 2);
+          ctx.lineTo(screen.x - LS_MAP.tileW / 2, screen.y);
+          ctx.closePath();
+          ctx.fill();
+        }
+
+        function drawLevelSelectSky() {
+          const sky = ctx.createLinearGradient(0, 0, 0, H);
+          sky.addColorStop(0, LS_THEME.voidTop);
+          sky.addColorStop(1, LS_THEME.voidBottom);
+          ctx.fillStyle = sky;
+          ctx.fillRect(0, 0, W, H);
+
+          const glow = ctx.createRadialGradient(
+            W / 2,
+            H * 0.46,
+            40,
+            W / 2,
+            H * 0.46,
+            W * 0.52,
+          );
+          glow.addColorStop(0, LS_THEME.glow);
+          glow.addColorStop(1, "rgba(255,206,120,0)");
+          ctx.fillStyle = glow;
+          ctx.fillRect(0, 0, W, H);
+
+          // The same country you play in, seen at dusk from far off: the island
+          // floats above it, and the keep on the horizon is where the trail ends.
+          const drift = -((levelSelectCamera.x * 0.06) % 620);
+          for (let i = -1; i < Math.ceil(W / 620) + 2; i++) {
+            const bx = drift + i * 620;
+            ctx.fillStyle = LS_THEME.duskHillFar;
+            ctx.beginPath();
+            ctx.moveTo(bx, H - 54);
+            ctx.quadraticCurveTo(bx + 310, H - 118, bx + 620, H - 54);
+            ctx.lineTo(bx + 620, H);
+            ctx.lineTo(bx, H);
+            ctx.closePath();
+            ctx.fill();
+            drawDuskKeep(bx + 96, H - 92);
+          }
+          for (let i = -1; i < Math.ceil(W / 470) + 2; i++) {
+            const bx = drift * 1.6 + i * 470;
+            ctx.fillStyle = LS_THEME.duskHillNear;
+            ctx.beginPath();
+            ctx.moveTo(bx, H - 18);
+            ctx.quadraticCurveTo(bx + 235, H - 70, bx + 470, H - 18);
+            ctx.lineTo(bx + 470, H);
+            ctx.lineTo(bx, H);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+
+        function drawDuskKeep(x, baseY) {
+          ctx.save();
+          ctx.fillStyle = LS_THEME.duskHillFar;
+          ctx.fillRect(x + 16, baseY - 26, 34, 30);
+          for (let i = 0; i < 3; i++) ctx.fillRect(x + 18 + i * 12, baseY - 32, 7, 7);
+          for (const tx of [x, x + 52]) {
+            ctx.fillRect(tx, baseY - 40, 14, 44);
+            ctx.beginPath();
+            ctx.moveTo(tx - 3, baseY - 40);
+            ctx.lineTo(tx + 7, baseY - 56);
+            ctx.lineTo(tx + 17, baseY - 40);
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.fillStyle = "rgba(255,206,120,0.55)";
+          ctx.fillRect(x + 30, baseY - 18, 5, 6);
+          ctx.fillRect(x + 4, baseY - 30, 4, 5);
+          ctx.restore();
+        }
+
+        // The cliff faces are what turn a tile field into an object: land with a
+        // front edge, a shadow, and somewhere it stops.
+        function drawIslandCliff(screen) {
+          const hw = LS_MAP.tileW / 2;
+          const hh = LS_MAP.tileH / 2;
+          const d = LS_MAP.cliffDepth;
+          ctx.fillStyle = LS_THEME.soilTop;
+          ctx.beginPath();
+          ctx.moveTo(screen.x - hw, screen.y);
+          ctx.lineTo(screen.x, screen.y + hh);
+          ctx.lineTo(screen.x + hw, screen.y);
+          ctx.lineTo(screen.x + hw, screen.y + 7);
+          ctx.lineTo(screen.x, screen.y + hh + 7);
+          ctx.lineTo(screen.x - hw, screen.y + 7);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = LS_THEME.soilFace;
+          ctx.beginPath();
+          ctx.moveTo(screen.x - hw, screen.y);
+          ctx.lineTo(screen.x, screen.y + hh);
+          ctx.lineTo(screen.x, screen.y + hh + d);
+          ctx.lineTo(screen.x - hw, screen.y + d);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = LS_THEME.soilSide;
+          ctx.beginPath();
+          ctx.moveTo(screen.x + hw, screen.y);
+          ctx.lineTo(screen.x, screen.y + hh);
+          ctx.lineTo(screen.x, screen.y + hh + d);
+          ctx.lineTo(screen.x + hw, screen.y + d);
+          ctx.closePath();
+          ctx.fill();
+        }
+
+        function drawLevelSelectGround() {
+          const center = worldToGrid(levelSelectCamera.x, levelSelectCamera.y);
+          const gx0 = Math.floor(center.gx) - 10;
+          const gx1 = Math.ceil(center.gx) + 10;
+          const gy0 = Math.floor(center.gy) - 10;
+          const gy1 = Math.ceil(center.gy) + 10;
+          const tiles = [];
+          for (let gx = gx0; gx <= gx1; gx++) {
+            for (let gy = gy0; gy <= gy1; gy++) {
+              if (!isIslandTile(gx, gy)) continue;
+              const world = isoToWorld(gx, gy);
+              const screen = worldToScreen(world.x, world.y);
+              if (
+                screen.x < -160 ||
+                screen.x > W + 160 ||
+                screen.y < -140 ||
+                screen.y > H + 160
+              )
+                continue;
+              tiles.push({ gx, gy, screen, sort: world.y });
+            }
+          }
+          tiles.sort((a, b) => a.sort - b.sort);
+
+          if (tiles.length) {
+            let minX = Infinity,
+              maxX = -Infinity,
+              maxY = -Infinity;
+            for (const t of tiles) {
+              minX = Math.min(minX, t.screen.x);
+              maxX = Math.max(maxX, t.screen.x);
+              maxY = Math.max(maxY, t.screen.y);
+            }
+            const cx = (minX + maxX) / 2;
+            const rx = (maxX - minX) / 2 + 120;
+            const cy = maxY + LS_MAP.cliffDepth + 18;
+            const ry = 74;
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.scale(1, ry / rx);
+            const shadow = ctx.createRadialGradient(0, 0, rx * 0.25, 0, 0, rx);
+            shadow.addColorStop(0, "rgba(8,4,18,0.55)");
+            shadow.addColorStop(1, "rgba(8,4,18,0)");
+            ctx.fillStyle = shadow;
+            ctx.beginPath();
+            ctx.arc(0, 0, rx, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          for (const t of tiles) {
+            const front =
+              !isIslandTile(t.gx + 1, t.gy) || !isIslandTile(t.gx, t.gy + 1);
+            if (front) drawIslandCliff(t.screen);
+            if (forestSheetReady) {
+              lsDrawAtlasFrame(
+                lsGroundFrame(t.gx, t.gy),
+                t.screen.x,
+                t.screen.y + 12,
+                LS_MAP.groundTileW,
+                0.55,
+                1,
+                "saturate(0.9) contrast(1.02) brightness(0.94)",
+              );
+            } else {
+              const alt = ((t.gx + t.gy) & 1) === 0;
+              drawIsoDiamondTile(
+                t.screen,
+                alt ? "#659c52" : LS_THEME.groundDark,
+              );
+            }
+          }
+        }
+
+        function drawLevelSelectVignette() {
+          const v = ctx.createRadialGradient(
+            W / 2,
+            H / 2,
+            H * 0.42,
+            W / 2,
+            H / 2,
+            W * 0.72,
+          );
+          v.addColorStop(0, "rgba(10,5,20,0)");
+          v.addColorStop(1, "rgba(10,5,20,0.55)");
+          ctx.fillStyle = v;
+          ctx.fillRect(0, 0, W, H);
+        }
+
+        // Trail styling carries progress: walked ground is a solid ribbon, the
+        // stretch you have not earned yet is only a dotted survey line.
+        function drawLevelSelectPathSegment(a, b, walked) {
+          const pad = 80;
+          if (
+            (a.x < -pad && b.x < -pad) ||
+            (a.x > W + pad && b.x > W + pad) ||
+            (a.y < -pad && b.y < -pad) ||
+            (a.y > H + pad && b.y > H + pad)
+          ) {
+            return;
+          }
+          ctx.save();
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+
+          ctx.strokeStyle = LS_THEME.trailShadow;
+          ctx.lineWidth = walked ? 30 : 24;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y + 5);
+          ctx.lineTo(b.x, b.y + 5);
+          ctx.stroke();
+
+          ctx.strokeStyle = walked ? LS_THEME.trailEdge : LS_THEME.trailEdgeCold;
+          ctx.lineWidth = walked ? 28 : 22;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+
+          ctx.strokeStyle = walked ? LS_THEME.trailFill : LS_THEME.trailFillCold;
+          ctx.lineWidth = walked ? 22 : 16;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+
+          if (walked) {
+            ctx.setLineDash([6, 10]);
+            ctx.strokeStyle = LS_THEME.trailDust;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+
+        function drawLevelSelectPath() {
+          const first = Math.max(0, levelSelectIndex - 8);
+          const last = Math.min(LEVELS.length - 1, levelSelectIndex + 8);
+          for (let i = first; i < last; i++) {
+            const a = levelGridPoint(i);
+            const b = levelGridPoint(i + 1);
+            drawLevelSelectPathSegment(
+              isoToScreen(a.gx, a.gy, 0),
+              isoToScreen(b.gx, b.gy, 0),
+              i + 1 <= maxLevelUnlocked,
+            );
+          }
+        }
+
+        function levelState(index) {
+          if (index > maxLevelUnlocked) return "locked";
+          if (index === levelSelectIndex) return "selected";
+          if (index < maxLevelUnlocked) return "completed";
+          return "available";
+        }
+
+        function addDecorItem(items, frame, gx, gy, w, anchorY = 1) {
+          const world = isoToWorld(gx, gy);
+          items.push({
+            kind: "decor",
+            sort: world.y,
+            draw() {
+              const s = worldToScreen(world.x, world.y);
+              lsDrawAtlasFrame(
+                frame,
+                s.x,
+                s.y,
+                w,
+                anchorY,
+                1,
+                "saturate(0.9) contrast(1.02) brightness(0.92)",
+              );
+            },
+          });
+        }
+
+        // Slots are offset far enough sideways that nothing drawn in front of a
+        // stump can cover its number.
+        const LS_DECOR_SLOTS = {
+          backLeft: [-1.7, 0.3],
+          backRight: [0.3, -1.7],
+          frontRight: [1.8, 0.2],
+          frontLeft: [0.2, 1.8],
+          farRight: [2.2, -0.5],
+          farLeft: [-0.5, 2.2],
+        };
+
+        function addSlotDecor(items, index, frame, slot, w) {
+          const p = levelGridPoint(index);
+          const off = LS_DECOR_SLOTS[slot];
+          addDecorItem(items, frame, p.gx + off[0], p.gy + off[1], w);
+        }
+
+        function addLevelDecor(items, index) {
+          const rota = [
+            ["pineTree", "backLeft", 74],
+            ["bushBerry", "frontRight", 54],
+            ["rocks", "backRight", 76],
+            ["flowerBush", "frontLeft", 56],
+            ["log", "farLeft", 62],
+            ["bushWhite", "farRight", 56],
+          ];
+          const a = rota[index % rota.length];
+          const b = rota[(index * 3 + 2) % rota.length];
+          addSlotDecor(items, index, a[0], a[1], a[2]);
+          if (b[1] !== a[1]) addSlotDecor(items, index, b[0], b[1], b[2]);
+          if (index === 0) addSlotDecor(items, 0, "cabin", "backLeft", 124);
+          if (index % 5 === 3) addSlotDecor(items, index, "pond", "backRight", 116);
+          if (index % 4 === 2) addSlotDecor(items, index, "lantern", "farRight", 40);
+        }
+
+        function drawFallbackNode(index, s, state) {
+          const locked = state === "locked";
+          const selected = state === "selected";
+          const size = 58;
+          ctx.save();
+          ctx.translate(s.x, s.y);
+          ctx.fillStyle = "rgba(0,0,0,0.26)";
+          ctx.beginPath();
+          ctx.ellipse(0, 23, 31, 9, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = locked
+            ? "#8d8677"
+            : selected
+              ? "#f2b25e"
+              : LS_THEME.nodeWood;
+          ctx.strokeStyle = locked ? "#5d574d" : LS_THEME.nodeBark;
+          ctx.lineWidth = selected ? 4 : 3;
+          ctx.beginPath();
+          ctx.ellipse(0, 0, size / 2, size / 3, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        function drawLevelSelectNode(index) {
+          const p = levelGridPoint(index);
+          const s = isoToScreen(p.gx, p.gy);
+          const state = levelState(index);
+          const locked = state === "locked";
+          const completed = state === "completed";
+          const selected = state === "selected";
+          const spriteName = locked
+            ? "stoneBlock"
+            : selected
+              ? "stumpGold"
+              : "stumpDefault";
+          const dispW = LS_MAP.nodeW;
+
+          levelSelectHitAreas.push({ index, x: s.x, y: s.y, r: 58 });
+
+          if (selected) {
+            const pulse = lsReduceMotion ? 0.35 : (renderTick % 84) / 84;
+            ctx.save();
+            ctx.globalAlpha = 0.55 * (1 - pulse);
+            ctx.strokeStyle = LS_THEME.royal;
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.ellipse(
+              s.x,
+              s.y + 10,
+              dispW * (0.34 + 0.22 * pulse),
+              dispW * (0.17 + 0.11 * pulse),
+              0,
+              0,
+              Math.PI * 2,
+            );
+            ctx.stroke();
+            ctx.globalAlpha = 0.3;
+            ctx.fillStyle = LS_THEME.royal;
+            ctx.beginPath();
+            ctx.ellipse(s.x, s.y + 10, dispW * 0.34, dispW * 0.17, 0, 0, 6.29);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          const placed = lsDrawAtlasFrame(
+            spriteName,
+            s.x,
+            s.y,
+            dispW,
+            0.35,
+            1,
+            locked
+              ? "saturate(0.5) brightness(0.9) contrast(0.98)"
+              : "saturate(0.95) contrast(1.02) brightness(1)",
+          );
+          if (!placed) drawFallbackNode(index, s, state);
+          const dh = placed ? placed.dh : dispW * 0.85;
+
+          if (!selected) {
+            pxText(String(index + 1), s.x, s.y + 2, 3, LS_THEME.cream, {
+              align: "center",
+              outline: locked ? "rgba(20,12,8,0.75)" : LS_THEME.ink,
+            });
+          }
+
+          if (completed) {
+            const bx = Math.round(s.x + dispW * 0.3);
+            const by = Math.round(s.y - dh * 0.12);
+            ctx.fillStyle = LS_THEME.royalDark;
+            ctx.beginPath();
+            ctx.arc(bx, by, 14, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = LS_THEME.royal;
+            ctx.beginPath();
+            ctx.arc(bx, by - 1, 13, 0, Math.PI * 2);
+            ctx.fill();
+            pxIcon(PX_CROWN, bx - 7, by - 5, 3, LS_THEME.goldDark);
+            pxIcon(PX_CROWN, bx - 7, by - 6, 3, LS_THEME.gold);
+          }
+
+          if (locked) {
+            const bx = Math.round(s.x + dispW * 0.3);
+            const by = Math.round(s.y - dh * 0.12);
+            ctx.fillStyle = "rgba(16,9,28,0.78)";
+            ctx.beginPath();
+            ctx.arc(bx, by, 14, 0, Math.PI * 2);
+            ctx.fill();
+            pxIcon(PX_LOCK, bx - 7, by - 8, 3, "#D8CFBB");
+          }
+        }
+
+        // The marker is the princess herself: she stands on the level you have
+        // chosen and hops along the trail to the next one when you choose again.
+        const lsWalker = {
+          from: null,
+          to: null,
+          t: 1,
+          facing: 1,
+        };
+
+        function lsWalkerPoint() {
+          const to = lsWalker.to == null ? levelSelectIndex : lsWalker.to;
+          const from = lsWalker.from == null ? to : lsWalker.from;
+          if (lsWalker.t >= 1 || from === to) {
+            const p = levelGridPoint(to);
+            return { s: isoToScreen(p.gx, p.gy), hop: 0 };
+          }
+          const steps = Math.abs(to - from);
+          const travelled = lsWalker.t * steps;
+          const leg = Math.min(steps - 1, Math.floor(travelled));
+          const legT = travelled - leg;
+          const dir = to > from ? 1 : -1;
+          const a = levelGridPoint(from + leg * dir);
+          const b = levelGridPoint(from + (leg + 1) * dir);
+          const sa = isoToScreen(a.gx, a.gy);
+          const sb = isoToScreen(b.gx, b.gy);
+          return {
+            s: {
+              x: sa.x + (sb.x - sa.x) * legT,
+              y: sa.y + (sb.y - sa.y) * legT,
+            },
+            hop: Math.sin(legT * Math.PI) * 26,
+          };
+        }
+
+        function drawLevelSelectWalker() {
+          if (lsWalker.to !== levelSelectIndex) {
+            lsWalker.from = lsWalker.to == null ? levelSelectIndex : lsWalker.to;
+            lsWalker.to = levelSelectIndex;
+            lsWalker.t = 0;
+            const a = levelGridPoint(lsWalker.from);
+            const b = levelGridPoint(lsWalker.to);
+            lsWalker.facing =
+              isoToScreen(b.gx, b.gy).x >= isoToScreen(a.gx, a.gy).x ? 1 : -1;
+          }
+          if (lsWalker.t < 1) {
+            const steps = Math.max(1, Math.abs(lsWalker.to - lsWalker.from));
+            lsWalker.t = lsReduceMotion
+              ? 1
+              : Math.min(1, lsWalker.t + 0.055 / steps);
+          }
+
+          const { s, hop } = lsWalkerPoint();
+          const idle =
+            lsWalker.t >= 1 && !lsReduceMotion
+              ? Math.sin(renderTick * 0.09) * 2.5
+              : 0;
+          const h = 86;
+          const w = h * 0.5;
+          const feetY = s.y - 8 - hop + idle;
+
+          ctx.save();
+          ctx.fillStyle = "rgba(10,5,20,0.35)";
+          ctx.beginPath();
+          ctx.ellipse(
+            s.x,
+            s.y + 2,
+            18 - hop * 0.25,
+            6 - hop * 0.08,
+            0,
+            0,
+            Math.PI * 2,
+          );
+          ctx.fill();
+          ctx.restore();
+
+          if (!playerSpriteReady) return;
+          ctx.save();
+          ctx.imageSmoothingEnabled = false;
+          if (lsWalker.facing < 0) {
+            ctx.translate(s.x + w / 2, feetY - h);
+            ctx.scale(-1, 1);
+            ctx.drawImage(playerSprite, 0, 0, w, h);
+          } else {
+            ctx.drawImage(playerSprite, s.x - w / 2, feetY - h, w, h);
+          }
+          ctx.restore();
+        }
+
+        function buildVisibleMapItems() {
+          const items = [];
+          const first = Math.max(0, levelSelectIndex - 8);
+          const last = Math.min(LEVELS.length - 1, levelSelectIndex + 8);
+          for (let i = first; i <= last; i++) {
+            addLevelDecor(items, i);
+            const world = levelWorldPoint(i);
+            items.push({
+              kind: "node",
+              sort: world.y + 20,
+              draw() {
+                drawLevelSelectNode(i);
+              },
+            });
+          }
+          return items.sort((a, b) => a.sort - b.sort);
+        }
+
+        // Progress pips repeat the map's three states (cleared, open, locked) so
+        // the header answers "how far along am I" without a second vocabulary.
+        function drawProgressPips(rightX, y) {
+          const size = 10,
+            gap = 7;
+          const total = LEVELS.length;
+          if (total > 16) {
+            const barW = 168,
+              barH = 10;
+            const bx = rightX - barW;
+            ctx.fillStyle = "rgba(255,243,214,0.22)";
+            ctx.fillRect(bx, y, barW, barH);
+            ctx.fillStyle = LS_THEME.gold;
+            ctx.fillRect(
+              bx,
+              y,
+              Math.round((barW * maxLevelUnlocked) / total),
+              barH,
+            );
+            ctx.fillStyle = LS_THEME.cream;
+            ctx.fillRect(
+              bx + Math.round((barW * maxLevelUnlocked) / total) - 2,
+              y - 2,
+              4,
+              barH + 4,
+            );
+            return;
+          }
+          const width = total * size + (total - 1) * gap;
+          let x = rightX - width;
+          for (let i = 0; i < total; i++) {
+            const cx = x + size / 2;
+            const cy = y + size / 2;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - size / 2);
+            ctx.lineTo(cx + size / 2, cy);
+            ctx.lineTo(cx, cy + size / 2);
+            ctx.lineTo(cx - size / 2, cy);
+            ctx.closePath();
+            if (i < maxLevelUnlocked) {
+              ctx.fillStyle = LS_THEME.gold;
+              ctx.fill();
+            } else if (i === maxLevelUnlocked) {
+              ctx.fillStyle = LS_THEME.cream;
+              ctx.fill();
+            } else {
+              ctx.strokeStyle = "rgba(255,243,214,0.35)";
+              ctx.lineWidth = 2;
+              ctx.stroke();
+            }
+            x += size + gap;
+          }
+        }
+
+        function drawLevelSelectUi() {
+          const level = LEVELS[levelSelectIndex] || {};
+          const name = (level.name || "LEVEL " + (levelSelectIndex + 1))
+            .toString()
+            .toUpperCase();
+          const wordmark = "JUMPING QUINN";
+          const cardW = pxWidth(wordmark, 4) + 74;
+          const cardH = 54;
+          lsPlaque(
+            22,
+            20,
+            cardW,
+            cardH,
+            LS_THEME.parchment,
+            LS_THEME.parchmentDark,
+          );
+          pxIcon(PX_CROWN, 40, 43, 4, LS_THEME.goldDark);
+          pxIcon(PX_CROWN, 40, 41, 4, LS_THEME.gold);
+          pxText(wordmark, 76, 33, 4, LS_THEME.ink);
+
+          drawProgressPips(W - 26, 30);
+          pxText(
+            maxLevelUnlocked + "/" + LEVELS.length + " CROWNS",
+            W - 26,
+            48,
+            2,
+            LS_THEME.creamDim,
+            { align: "right" },
+          );
+
+          const label = "PLAY " + name;
+          const btnW = pxWidth(label, 3) + 56;
+          const btnH = 52;
+          const btnX = Math.round((W - btnW) / 2);
+          const btnY = H - 88;
+          levelSelectPlayArea = { x: btnX, y: btnY, w: btnW, h: btnH };
+          pxText(
+            "LEVEL " + (levelSelectIndex + 1) + " OF " + LEVELS.length,
+            W / 2,
+            btnY - 20,
+            2,
+            LS_THEME.creamDim,
+            { align: "center" },
+          );
+          lsPlaque(btnX, btnY, btnW, btnH, LS_THEME.royal, LS_THEME.gold);
+          ctx.fillStyle = "rgba(255,255,255,0.16)";
+          ctx.fillRect(btnX + 3, btnY + 3, btnW - 6, 10);
+          pxText(label, W / 2, btnY + 17, 3, LS_THEME.cream, {
+            align: "center",
+            shadow: LS_THEME.royalDark,
+          });
+
+          ctx.save();
+          ctx.fillStyle = LS_THEME.creamDim;
+          ctx.font = 'bold 11px "Courier New", monospace';
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "3px";
+          ctx.fillText(
+            viewport.touch
+              ? "TAP A STUMP TO PLAY  ·  DRAG TO LOOK AROUND"
+              : "← →  CHOOSE     ENTER  PLAY     DRAG  LOOK AROUND",
+            W / 2,
+            H - 20,
+          );
+          ctx.restore();
+          ctx.textAlign = "start";
+          ctx.textBaseline = "top";
+        }
+
+        function drawLevelSelect() {
+          levelSelectHitAreas = [];
+          levelSelectPlayArea = null;
+          if (!levelSelectCamera.initialized) centerLevelSelectCamera(true);
+
+          drawLevelSelectSky();
+          drawLevelSelectGround();
+          drawLevelSelectPath();
+
+          const items = buildVisibleMapItems();
+          for (const item of items) item.draw();
+          drawLevelSelectWalker();
+          drawLevelSelectVignette();
+          drawLevelSelectUi();
+        }
+
+        function drawRotateOverlay() {
+          ctx.fillStyle = "rgba(0,0,0,0.82)";
+          ctx.fillRect(0, 0, W, H);
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          pxText("TURN SIDEWAYS", W / 2, H / 2 - 72, 6, LS_THEME.gold, {
+            align: "center",
+            shadow: "rgba(20,10,28,0.85)",
+            shadowOffset: 3,
+          });
+          ctx.fillStyle = "#FFFFFF";
+          ctx.font = 'bold 24px "Courier New", monospace';
+          ctx.fillText("Quinn jumps best in landscape.", W / 2, H / 2 + 10);
+          ctx.font = 'bold 18px "Courier New", monospace';
+          ctx.fillText(
+            "Turn your device to continue.",
+            W / 2,
+            H / 2 + 50,
+          );
+          ctx.textAlign = "start";
+          ctx.textBaseline = "top";
+        }
+
+        let renderTick = 0;
+        function syncCanvasPresentation() {
+          const imageRendering =
+            GameState.current === "LEVEL_SELECT" && forestSheetReady
+              ? "auto"
+              : "pixelated";
+          if (canvas.style.imageRendering !== imageRendering) {
+            canvas.style.imageRendering = imageRendering;
+          }
+        }
+
+        function render() {
+          syncCanvasPresentation();
+
+          if (GameState.current === "LEVEL_SELECT") {
+            drawLevelSelect();
+            if (viewport.phonePortrait) drawRotateOverlay();
+            renderTick++;
+            return;
+          }
+
+          // Apply screen shake as a canvas translate for this frame only.
+          let ox = 0,
+            oy = 0;
+          if (shakeFrames > 0) {
+            ox = (Math.random() * 2 - 1) * shakeMag;
+            oy = (Math.random() * 2 - 1) * shakeMag;
+          }
+          ctx.save();
+          ctx.translate(ox, oy);
+
+          drawBackground();
+          if (level.decorations) {
+            for (const d of level.decorations) {
+              const dx = d.x - cam.x,
+                dy = d.y - cam.y;
+              if (dx + d.w < 0 || dx > W) continue;
+              drawShrub(dx, dy, d.w, d.h, d.color);
+            }
+          }
+          for (const p of platforms) drawPlatform(p);
+          drawGoal();
+          for (const pk of level.pickups) drawPickup(pk, renderTick);
+          for (const e of level.enemies) drawEnemy(e);
+          drawPlayer();
+          drawParticles();
+
+          ctx.restore();
+          drawHud(); // HUD stays fixed (no shake)
+          if (viewport.phonePortrait) drawRotateOverlay();
+          renderTick++;
+        }
+
+        // ---------- GAME LOOP (fixed 60Hz physics, variable render) ----------
+        const TICK_MS = 1000 / 60;
+        let lastTime = 0;
+        let accumulator = 0;
+
+        function frame(now) {
+          if (!lastTime) lastTime = now;
+          accumulator += now - lastTime;
+          lastTime = now;
+
+          if (accumulator > TICK_MS * 10) accumulator = TICK_MS * 10;
+
+          if (viewport.phonePortrait) {
+            accumulator = 0;
+            clearPressedInputs();
+            render();
+            requestAnimationFrame(frame);
+            return;
+          }
+
+          while (accumulator >= TICK_MS) {
+            update();
+            // The adventure map owns its own camera and can be the initial screen,
+            // before a platforming level has been loaded.
+            if (level && GameState.current !== "LEVEL_SELECT") updateCamera();
+            advanceTouchState();
+            clearPressedInputs();
+            accumulator -= TICK_MS;
+          }
+
+          render();
+          requestAnimationFrame(frame);
+        }
+
+        // Editor playtest links keep their direct-to-level behavior. Normal visits
+        // start on the adventure map with the furthest unlocked level selected.
+        if (hasPlaytestLevel()) GameState.transitionTo("PLAY");
+        else GameState.transitionTo("LEVEL_SELECT");
+        requestAnimationFrame(frame);
+      })();
+    </script>
+  </body>
 </html>
