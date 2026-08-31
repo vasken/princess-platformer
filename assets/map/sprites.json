@@ -1,0 +1,24 @@
+{
+  "display": {
+    "log-open": 155,
+    "log-cleared": 315,
+    "log-locked": 292,
+    "tree-oak": 150,
+    "tree-pine": 92,
+    "bush": 132,
+    "rocks": 150,
+    "pond": 250,
+    "cabin": 200
+  },
+  "anchor": {
+    "log-open": 0.4174,
+    "log-cleared": 0.2644,
+    "log-locked": 0.3324,
+    "tree-oak": 0.9603,
+    "tree-pine": 0.9594,
+    "bush": 0.9591,
+    "rocks": 0.9688,
+    "pond": 0.4992,
+    "cabin": 0.9613
+  }
+}

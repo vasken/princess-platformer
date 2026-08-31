@@ -29,6 +29,8 @@ const MIME = {
 };
 
 // Only top-level app files and project assets may be served. Anything else → 404.
+// Map sprites live under assets/map/ and are all served.
+const ALLOWED_DIRS = ['assets/map/'];
 const ALLOWED = new Set([
   "index.html",
   "editor.html",
@@ -79,7 +81,8 @@ const server = http.createServer(async (req, res) => {
       file = "editor.html";
     else file = pathname.replace(/^\/+/, "");
 
-    if (!ALLOWED.has(file)) return send(res, 404, "Not found");
+    const dirOk = ALLOWED_DIRS.some((d) => file.startsWith(d) && file.endsWith('.png'));
+    if (!ALLOWED.has(file) && !dirOk) return send(res, 404, "Not found");
 
     const filePath = path.join(ROOT, file);
     if (!fs.existsSync(filePath)) return send(res, 404, "Not found");

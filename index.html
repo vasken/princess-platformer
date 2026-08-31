@@ -54,36 +54,6 @@
         };
         playerSprite.src = "assets/princess-main.png";
 
-        // Isometric forest assets used by the level-select map.
-        // Bboxes are tight per-sprite; the sheet's bottom rows pack sprites of
-        // varying widths so the layout is not a uniform grid.
-        const forestSheet = new Image();
-        let forestSheetReady = false;
-        forestSheet.onload = () => {
-          forestSheetReady = true;
-        };
-        forestSheet.src =
-          "assets/isometric_forest_puzzle_assets_sheet_transparent.png";
-        const FOREST_ATLAS = {
-          grass: { sx: 31, sy: 47, sw: 204, sh: 149 }, // green grass tile
-          grassDark: { sx: 260, sy: 47, sw: 204, sh: 149 }, // dark grass tile
-          grassFlowers: { sx: 710, sy: 47, sw: 204, sh: 149 }, // flower grass tile
-          pond: { sx: 710, sy: 213, sw: 201, sh: 152 }, // pond with reeds
-          stumpDefault: { sx: 34, sy: 839, sw: 181, sh: 154 }, // plain stump (completed node)
-          stumpGrass: { sx: 34, sy: 1008, sw: 181, sh: 154 }, // gold stump
-          stumpGold: { sx: 476, sy: 1008, sw: 185, sh: 154 }, // glowing stump (current node)
-          stoneBlock: { sx: 703, sy: 1008, sw: 182, sh: 154 }, // grey stone (locked node)
-          cabin: { sx: 28, sy: 1175, sw: 220, sh: 155 }, // log cabin
-          treeApple: { sx: 606, sy: 1175, sw: 122, sh: 155 }, // small deciduous tree
-          bushWhite: { sx: 762, sy: 1175, sw: 123, sh: 155 }, // white-flower bush
-          rocks: { sx: 20, sy: 1335, sw: 180, sh: 160 }, // rock pile
-          flowerBush: { sx: 200, sy: 1335, sw: 123, sh: 160 }, // pink/white flower bush
-          bushBerry: { sx: 347, sy: 1335, sw: 126, sh: 160 }, // red berry bush
-          pineTree: { sx: 502, sy: 1335, sw: 119, sh: 160 }, // pine tree
-          log: { sx: 631, sy: 1335, sw: 127, sh: 160 }, // wooden log
-          fence: { sx: 784, sy: 1335, sw: 126, sh: 160 }, // fence section
-          lantern: { sx: 67, sy: 1500, sw: 78, sh: 160 }, // lantern post
-        };
 
         // ---------- PALETTE (storybook meadow) ----------
         // Warm daylight over green country. The old purple survives only as the
@@ -716,8 +686,8 @@
           level.camCeiling = minPlatY - 100;
           level.camFloor = level.deathY;
 
-          bannerEyebrow = "LEVEL " + (index + 1) + " OF " + LEVELS.length;
-          showBanner(level.name || "LEVEL " + (index + 1));
+          bannerEyebrow = "Level " + (index + 1) + " of " + LEVELS.length;
+          showBanner(titleCase(level.name || "Level " + (index + 1)));
         }
 
         // Place the player at the current level's spawn and clear transient state.
@@ -1411,13 +1381,13 @@
         function drawHud() {
           const lines = viewport.touch
             ? [
-                "LEFT HALF  DRAG TO MOVE",
-                "RIGHT HALF  TAP OR SWIPE TO JUMP",
-                "SWIPE DOWN  DROP THROUGH PLANKS",
+                "Left half: drag to move",
+                "Right half: tap or swipe to jump",
+                "Swipe down: drop through planks",
               ]
-            : ["A/D  MOVE     SPACE  JUMP", "S+SPACE  DROP     P  PAUSE"];
+            : ["A/D move     Space jump", "S+Space drop     P pause"];
           const plateW = 328;
-          const plateH = 52 + lines.length * 15;
+          const plateH = 58 + lines.length * 16;
           ctx.fillStyle = "rgba(30,18,40,0.28)";
           ctx.fillRect(16, 17, plateW, plateH);
           ctx.fillStyle = COLORS.parchmentEdge;
@@ -1429,25 +1399,28 @@
           ctx.fillRect(26, 25, 12, 12);
           ctx.fillStyle = COLORS.coin;
           ctx.fillRect(28, 27, 8, 8);
-          pxText(String(score), 46, 26, 2, COLORS.ink);
-          pxText(
-            (level.name || "") +
-              "   " +
+          uiText(String(score), 46, 32, 20, COLORS.ink, {
+            align: "left",
+          });
+          uiText(
+            titleCase(level.name || "") +
+              "  ·  Level " +
               (currentLevelIndex + 1) +
-              "/" +
+              " of " +
               LEVELS.length,
             26,
-            46,
-            2,
+            54,
+            15,
             COLORS.inkSoft,
+            { align: "left", weight: 700 },
           );
 
           ctx.save();
           ctx.fillStyle = "rgba(58,36,18,0.72)";
-          ctx.font = 'bold 11px "Courier New", monospace';
+          ctx.font = '700 12px ' + UI_FONT;
           ctx.textBaseline = "top";
           ctx.textAlign = "start";
-          lines.forEach((line, i) => ctx.fillText(line, 26, 66 + i * 15));
+          lines.forEach((line, i) => ctx.fillText(line, 26, 70 + i * 16));
           ctx.restore();
 
           if (
@@ -1470,7 +1443,7 @@
             const k =
               bannerFrames > 90 ? (110 - bannerFrames) / 20 : bannerFrames / 90;
             ctx.globalAlpha = Math.max(0, Math.min(1, k));
-            const ribbonW = Math.max(pxWidth(bannerText, 5) + 96, 320);
+            const ribbonW = Math.max(uiTextWidth(bannerText, 40) + 120, 340);
             const ribbonH = 88;
             const ribbonX = Math.round((W - ribbonW) / 2);
             const ribbonY = H / 2 - 54;
@@ -1482,12 +1455,10 @@
             ctx.fillRect(ribbonX + 4, ribbonY + 4, ribbonW - 8, ribbonH - 8);
             ctx.fillStyle = COLORS.parchmentEdge;
             ctx.fillRect(ribbonX + 4, ribbonY + 26, ribbonW - 8, 2);
-            pxText(bannerEyebrow, W / 2, ribbonY + 12, 2, COLORS.inkSoft, {
-              align: "center",
+            uiText(bannerEyebrow, W / 2, ribbonY + 17, 15, COLORS.inkSoft, {
+              weight: 700,
             });
-            pxText(bannerText, W / 2, ribbonY + 40, 5, COLORS.ink, {
-              align: "center",
-            });
+            uiText(bannerText, W / 2, ribbonY + 56, 40, COLORS.ink);
             ctx.textAlign = "start";
             ctx.globalAlpha = 1;
           }
@@ -1498,22 +1469,22 @@
             ctx.fillRect(0, 0, W, H);
             ctx.textAlign = "center";
             if (s === "DEAD") {
-              pxText("TRY AGAIN", W / 2, H / 2 - 76, 7, "#FF9DC4", {
+              uiText("Try again", W / 2, H / 2 - 54, 56, "#FF9DC4", {
                 align: "center",
                 shadow: "rgba(20,10,28,0.85)",
-                shadowOffset: 3,
+                shadowDy: 3,
               });
             } else if (s === "WIN") {
-              pxText("YOU MADE IT", W / 2, H / 2 - 76, 7, COLORS.coin, {
+              uiText("You made it!", W / 2, H / 2 - 54, 56, COLORS.coin, {
                 align: "center",
                 shadow: "rgba(20,10,28,0.85)",
-                shadowOffset: 3,
+                shadowDy: 3,
               });
             } else {
-              pxText("PAUSED", W / 2, H / 2 - 76, 7, COLORS.parchment, {
+              uiText("Paused", W / 2, H / 2 - 54, 56, COLORS.parchment, {
                 align: "center",
                 shadow: "rgba(20,10,28,0.85)",
-                shadowOffset: 3,
+                shadowDy: 3,
               });
             }
             ctx.fillStyle = COLORS.hudText;
@@ -1550,174 +1521,99 @@
         }
 
         // ---------- LEVEL-SELECT ART ----------
-        // The map is staged as a lit diorama: a finite island of land floating in
-        // dusk, so the trail reads as a composed place instead of an endless field
-        // of grass tiles. Accents are the princess's own colors — crown gold and
-        // dress pink — so the map belongs to her and not to a generic UI kit.
+        // The map is drawn, not sprited. The forest asset sheet is painterly and
+        // every prop carries its own bright grass base, which fights a calm dark
+        // field; flat shapes give the quiet ground and hard-edged silhouettes the
+        // storybook map wants, and stay crisp at any resolution.
         const LS_THEME = {
-          voidTop: "#3A2160",
-          voidBottom: "#1B1030",
-          duskHillFar: "#412C68",
-          duskHillNear: "#2B1C4B",
-          glow: "rgba(255,206,120,0.20)",
-          soilTop: "#6B4220",
-          soilFace: "#4A2C13",
-          soilSide: "#33200F",
-          trailFill: "#F2DCA4",
-          trailEdge: "#A8763A",
-          trailEdgeCold: "#6E5A3E",
-          trailFillCold: "#B7A47E",
-          trailShadow: "rgba(12,6,24,0.45)",
-          trailDust: "rgba(255,214,132,0.55)",
-          parchment: "#F6E6BE",
-          parchmentDark: "#D9BF8C",
-          ink: "#3A2412",
-          royal: "#E8368F",
-          royalDark: "#9C1B58",
-          gold: "#FFC531",
-          goldDark: "#B57C0E",
-          cream: "#FFF3D6",
-          creamDim: "rgba(255,243,214,0.55)",
-          ground: "#6aa257",
-          groundDark: "#548846",
-          nodeWood: "#f1d9a0",
-          nodeBark: "#7a4f2b",
-        };
-        const LS_MAP = {
-          tileW: 104,
-          tileH: 52,
-          groundTileW: 136,
-          nodeW: 112,
-          centerX: W / 2,
-          centerY: H / 2 + 4,
-          cameraEase: 0.16,
-          dragDeadzone: 8,
-          islandRadius: 2.7,
-          cliffDepth: 30,
-          fitPadX: 150,
-          fitPadY: 120,
+          field: "#2E4A2E",
+          fieldAlt: "#345334",
+          fieldFlower: "rgba(255,255,255,0.5)",
+          woodFace: "#F7ECC6",
+          woodFaceAged: "#E8D29A",
+          woodRing: "#DCC287",
+          bark: "#6B4A2A",
+          barkDark: "#4A3220",
+          lockedFace: "#8A8071",
+          lockedRing: "#756C5E",
+          lockedBark: "#413A2F",
+          lockedBarkMid: "#544B3D",
+          lockedInk: "#D8D0C0",
+          canopy: "#7CB264",
+          canopyDark: "#67994F",
+          trunk: "#C09566",
+          trunkDark: "#9C7449",
+          bush: "#63A052",
+          bushDark: "#528A44",
+          water: "#4A8FD6",
+          waterDeep: "#3873B4",
+          lily: "#69A85F",
+          wall: "#C9A26A",
+          wallDark: "#A8834F",
+          roof: "#7A5533",
+          roofDark: "#5E4028",
+          stone: "#B9B4AC",
+          cta: "#EBBA55",
+          ctaDark: "#C7962F",
+          ctaInk: "#3B2A10",
+          glow: "#F2A0C8",
+          ink: "#FFFFFF",
+          inkDim: "rgba(255,255,255,0.68)",
+          shadow: "rgba(12,26,12,0.35)",
         };
 
-        // 5x7 display face. A system font would break the game's pixel grid, and
-        // this stays crisp and offline at any size. Courier is kept for the small
-        // utility line only, so the two roles never blur together.
-        const PX_GLYPHS = {
-          A: [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
-          B: [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],
-          C: [0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e],
-          D: [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e],
-          E: [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
-          F: [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
-          G: [0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f],
-          H: [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
-          I: [0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e],
-          J: [0x01, 0x01, 0x01, 0x01, 0x01, 0x11, 0x0e],
-          K: [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
-          L: [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f],
-          M: [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
-          N: [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
-          O: [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
-          P: [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
-          Q: [0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d],
-          R: [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
-          S: [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
-          T: [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
-          U: [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
-          V: [0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04],
-          W: [0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11],
-          X: [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11],
-          Y: [0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04],
-          Z: [0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f],
-          0: [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
-          1: [0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e],
-          2: [0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f],
-          3: [0x1f, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0e],
-          4: [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
-          5: [0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e],
-          6: [0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e],
-          7: [0x1f, 0x01, 0x02, 0x04, 0x04, 0x04, 0x04],
-          8: [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
-          9: [0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c],
-          "-": [0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00],
-          "/": [0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],
-          ".": [0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c],
-          "!": [0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04],
-          "?": [0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],
-          " ": [0, 0, 0, 0, 0, 0, 0],
+        const LS_MAP = {
+          tileW: 152,
+          tileH: 95,
+          nodeW: 148,
+          stepA: [132, -22],
+          stepB: [86, -80],
+          centerX: W / 2,
+          centerY: H / 2 + 10,
+          cameraEase: 0.16,
+          dragDeadzone: 8,
+          fitPadX: 190,
+          fitPadY: 130,
         };
-        const PX_W = 5,
-          PX_H = 7;
 
         const lsReduceMotion =
           typeof matchMedia === "function" &&
           matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-        function pxWidth(text, scale) {
-          return text.length ? (text.length * (PX_W + 1) - 1) * scale : 0;
+        function titleCase(text) {
+          return String(text)
+            .toLowerCase()
+            .replace(/\b[a-z]/g, (c) => c.toUpperCase());
         }
 
-        function pxBlit(text, x, y, scale, color) {
-          ctx.fillStyle = color;
-          let cx = x;
-          for (const ch of String(text).toUpperCase()) {
-            const glyph = PX_GLYPHS[ch];
-            if (glyph) {
-              for (let r = 0; r < PX_H; r++) {
-                const bits = glyph[r];
-                if (!bits) continue;
-                for (let c = 0; c < PX_W; c++) {
-                  if (bits & (1 << (PX_W - 1 - c))) {
-                    ctx.fillRect(cx + c * scale, y + r * scale, scale, scale);
-                  }
-                }
-              }
-            }
-            cx += (PX_W + 1) * scale;
-          }
-        }
+        const UI_FONT =
+          "'Nunito', 'Avenir Next', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif";
 
-        // y is the cap line (top of the glyph box); height is always PX_H * scale.
-        function pxText(text, x, y, scale, color, opts = {}) {
-          const w = pxWidth(text, scale);
-          const sx = Math.round(
-            opts.align === "center"
-              ? x - w / 2
-              : opts.align === "right"
-                ? x - w
-                : x,
-          );
-          const sy = Math.round(y);
-          if (opts.outline) {
-            for (const [ox, oy] of [
-              [-scale, 0],
-              [scale, 0],
-              [0, -scale],
-              [0, scale],
-            ]) {
-              pxBlit(text, sx + ox, sy + oy, scale, opts.outline);
-            }
-          }
+        function uiText(text, x, y, size, color, opts = {}) {
+          ctx.save();
+          ctx.font = (opts.weight || 800) + " " + size + "px " + UI_FONT;
+          ctx.textAlign = opts.align || "center";
+          ctx.textBaseline = opts.baseline || "middle";
           if (opts.shadow) {
-            pxBlit(text, sx, sy + (opts.shadowOffset || scale), scale, opts.shadow);
+            ctx.fillStyle = opts.shadow;
+            ctx.fillText(
+              text,
+              x,
+              y + (opts.shadowDy === undefined ? 2 : opts.shadowDy),
+            );
           }
-          pxBlit(text, sx, sy, scale, color);
+          ctx.fillStyle = color;
+          ctx.fillText(text, x, y);
+          ctx.restore();
+        }
+
+        function uiTextWidth(text, size, weight = 800) {
+          ctx.save();
+          ctx.font = weight + " " + size + "px " + UI_FONT;
+          const w = ctx.measureText(text).width;
+          ctx.restore();
           return w;
         }
-
-        function pxIcon(rows, x, y, scale, color) {
-          ctx.fillStyle = color;
-          for (let r = 0; r < rows.length; r++) {
-            const row = rows[r];
-            for (let c = 0; c < row.length; c++) {
-              if (row[c] !== " ") {
-                ctx.fillRect(x + c * scale, y + r * scale, scale, scale);
-              }
-            }
-          }
-        }
-
-        const PX_CROWN = ["# # #", "#####", "#####"];
-        const PX_LOCK = [" ### ", "#   #", "#####", "## ##", "#####"];
 
         function lsRoundedPath(x, y, w, h, r) {
           ctx.beginPath();
@@ -1733,36 +1629,50 @@
           ctx.closePath();
         }
 
-        // Carved plaque: dark bevel under a parchment face, no border radius, so
-        // the HUD reads as part of the world rather than a web card.
-        function lsPlaque(x, y, w, h, fill, edge) {
-          ctx.fillStyle = "rgba(10,5,20,0.45)";
-          ctx.fillRect(x + 4, y + 5, w, h);
-          ctx.fillStyle = edge;
-          ctx.fillRect(x, y, w, h);
-          ctx.fillStyle = fill;
-          ctx.fillRect(x + 3, y + 3, w - 6, h - 6);
+        // A diamond with rounded corners — the shape every tile, slice and
+        // footprint on this map is built from.
+        function lsDiamondPath(cx, cy, rx, ry, k = 0.24) {
+          const pts = [
+            [cx, cy - ry],
+            [cx + rx, cy],
+            [cx, cy + ry],
+            [cx - rx, cy],
+          ];
+          const lerp = (a, b, t) => [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+          ];
+          ctx.beginPath();
+          for (let i = 0; i < 4; i++) {
+            const cur = pts[i];
+            const prev = pts[(i + 3) % 4];
+            const next = pts[(i + 1) % 4];
+            const from = lerp(cur, prev, k);
+            const to = lerp(cur, next, k);
+            if (i === 0) ctx.moveTo(from[0], from[1]);
+            else ctx.lineTo(from[0], from[1]);
+            ctx.quadraticCurveTo(cur[0], cur[1], to[0], to[1]);
+          }
+          ctx.closePath();
+        }
+
+        function lsShadow(cx, cy, rx, ry, alpha = 0.3) {
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.scale(1, ry / rx);
+          const g = ctx.createRadialGradient(0, 0, rx * 0.15, 0, 0, rx);
+          g.addColorStop(0, "rgba(12,26,12," + alpha + ")");
+          g.addColorStop(1, "rgba(12,26,12,0)");
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(0, 0, rx, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
         }
 
         function lsNoise(n) {
           const s = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
           return s - Math.floor(s);
-        }
-
-        function isoToWorld(gx, gy, z = 0) {
-          return {
-            x: ((gx - gy) * LS_MAP.tileW) / 2,
-            y: ((gx + gy) * LS_MAP.tileH) / 2 - z,
-          };
-        }
-
-        function worldToGrid(wx, wy) {
-          const a = wx / (LS_MAP.tileW / 2);
-          const b = wy / (LS_MAP.tileH / 2);
-          return {
-            gx: (a + b) / 2,
-            gy: (b - a) / 2,
-          };
         }
 
         function worldToScreen(wx, wy) {
@@ -1772,83 +1682,17 @@
           };
         }
 
-        function isoToScreen(gx, gy, z = 0) {
-          const world = isoToWorld(gx, gy, z);
-          return worldToScreen(world.x, world.y);
-        }
-
-        function levelGridPoint(index) {
-          const bend = Math.round(Math.sin(index * 1.15) * 2);
-          return {
-            gx: index * 1.45 + bend * 0.25,
-            gy: -index * 1.45 + bend * 0.75,
-          };
-        }
-
+        // The chain climbs to the right and steps side to side, so the levels
+        // read as a flight of stairs rather than a row of buttons.
         function levelWorldPoint(index) {
-          const p = levelGridPoint(index);
-          return isoToWorld(p.gx, p.gy);
-        }
-
-        // The land is only the ground near the trail. Cached because the trail
-        // never moves; the edge is jittered so the coastline is not a clean arc.
-        const lsIslandCache = new Map();
-        let lsTrailSamples = null;
-
-        function trailSamples() {
-          if (lsTrailSamples) return lsTrailSamples;
-          const pts = [];
-          for (let i = 0; i < LEVELS.length; i++) {
-            const a = levelGridPoint(i);
-            pts.push(a);
-            if (i === LEVELS.length - 1) break;
-            const b = levelGridPoint(i + 1);
-            for (let t = 0.2; t < 1; t += 0.2) {
-              pts.push({
-                gx: a.gx + (b.gx - a.gx) * t,
-                gy: a.gy + (b.gy - a.gy) * t,
-              });
-            }
+          let x = 0,
+            y = 0;
+          for (let i = 0; i < index; i++) {
+            const v = i % 2 === 0 ? LS_MAP.stepA : LS_MAP.stepB;
+            x += v[0];
+            y += v[1];
           }
-          lsTrailSamples = pts;
-          return pts;
-        }
-
-        function baseIslandTile(gx, gy) {
-          const key = gx + ":" + gy;
-          const hit = lsIslandCache.get(key);
-          if (hit !== undefined) return hit;
-          let best = Infinity;
-          for (const p of trailSamples()) {
-            const ahead = gx + gy - (p.gx + p.gy);
-            const d =
-              Math.hypot(gx - p.gx, gy - p.gy) * (ahead > 0 ? 1.3 : 0.92);
-            if (d < best) best = d;
-          }
-          const jitter = (lsNoise(gx * 12.9 + gy * 78.2) - 0.5) * 0.5;
-          const on = best <= LS_MAP.islandRadius + jitter;
-          lsIslandCache.set(key, on);
-          return on;
-        }
-
-        // A tile clinging on by one corner reads as a rendering mistake, so the
-        // coastline keeps only land that has neighbours to hold on to.
-        const lsIslandSmoothed = new Map();
-        function isIslandTile(gx, gy) {
-          const key = gx + ":" + gy;
-          const hit = lsIslandSmoothed.get(key);
-          if (hit !== undefined) return hit;
-          let on = baseIslandTile(gx, gy);
-          if (on) {
-            const n =
-              baseIslandTile(gx + 1, gy) +
-              baseIslandTile(gx - 1, gy) +
-              baseIslandTile(gx, gy + 1) +
-              baseIslandTile(gx, gy - 1);
-            on = n >= 2;
-          }
-          lsIslandSmoothed.set(key, on);
-          return on;
+          return { x, y };
         }
 
         function centerLevelSelectCamera(immediate = false) {
@@ -1863,8 +1707,6 @@
           }
         }
 
-        // When the whole island fits on screen it is framed once and held still —
-        // a small map should be a composition, not a viewport that drifts.
         let lsFitCache;
         function lsFitTarget() {
           if (lsFitCache !== undefined) return lsFitCache;
@@ -1882,7 +1724,7 @@
           const spanX = maxX - minX + LS_MAP.fitPadX * 2;
           const spanY = maxY - minY + LS_MAP.fitPadY * 2;
           lsFitCache =
-            spanX <= W - 60 && spanY <= H - 150
+            spanX <= W && spanY <= H - 120
               ? { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
               : null;
           return lsFitCache;
@@ -1956,325 +1798,104 @@
           centerLevelSelectCamera(false);
         }
 
-        function lsDrawAtlasFrame(
-          name,
-          sx,
-          sy,
-          dispW,
-          anchorY = 1,
-          alpha = 1,
-          filter = "saturate(0.94) contrast(0.97) brightness(0.98)",
-        ) {
-          const r = FOREST_ATLAS[name];
-          if (!r || !forestSheetReady) return null;
-          const dispH = dispW * (r.sh / r.sw);
-          if (
-            sx + dispW / 2 < -120 ||
-            sx - dispW / 2 > W + 120 ||
-            sy + dispH < -120 ||
-            sy - dispH > H + 120
-          ) {
-            return {
-              dx: sx - dispW / 2,
-              dy: sy - dispH * anchorY,
-              dw: dispW,
-              dh: dispH,
-            };
+        // ---- map sprites ----
+        // Generated by tools/gen_map_sprites.py (image model + background key).
+        // `anchor` is the fraction of the frame above the point where the sprite
+        // meets the ground; `w` is its display width in map units.
+        const LS_SPRITES = {
+          "log-open": { w: 155, anchor: 0.4174 },
+          "log-cleared": { w: 315, anchor: 0.2644 },
+          "log-locked": { w: 292, anchor: 0.3324 },
+          "tree-oak": { w: 150, anchor: 0.9603 },
+          "tree-pine": { w: 92, anchor: 0.9594 },
+          "bush": { w: 132, anchor: 0.9591 },
+          "rocks": { w: 150, anchor: 0.9688 },
+          "pond": { w: 250, anchor: 0.4992 },
+          "cabin": { w: 200, anchor: 0.9613 },
+        };
+        const lsImages = {};
+        for (const spriteName of Object.keys(LS_SPRITES)) {
+          const img = new Image();
+          img.src = "assets/map/" + spriteName + ".png";
+          lsImages[spriteName] = img;
+        }
+
+        function lsSprite(name, sx, sy, scale = 1) {
+          const def = LS_SPRITES[name];
+          const img = lsImages[name];
+          if (!def || !img || !img.complete || !img.naturalWidth) return null;
+          const dw = def.w * scale;
+          const dh = dw * (img.naturalHeight / img.naturalWidth);
+          const dx = sx - dw / 2;
+          const dy = sy - dh * def.anchor;
+          if (dx + dw < -60 || dx > W + 60 || dy + dh < -60 || dy > H + 60) {
+            return null;
           }
           ctx.save();
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = "high";
-          ctx.globalAlpha = alpha;
-          ctx.filter = filter;
-          ctx.drawImage(
-            forestSheet,
-            r.sx,
-            r.sy,
-            r.sw,
-            r.sh,
-            sx - dispW / 2,
-            sy - dispH * anchorY,
-            dispW,
-            dispH,
-          );
+          ctx.drawImage(img, dx, dy, dw, dh);
           ctx.restore();
-          return {
-            dx: sx - dispW / 2,
-            dy: sy - dispH * anchorY,
-            dw: dispW,
-            dh: dispH,
-          };
+          return { dw, dh };
         }
 
-        function lsGroundFrame(gx, gy) {
-          const n = lsNoise(gx * 31.3 + gy * 17.9);
-          if (n > 0.91) return "grassFlowers";
-          if (n > 0.68) return "grassDark";
-          return "grass";
-        }
-
-        function drawIsoDiamondTile(screen, fill) {
-          ctx.fillStyle = fill;
-          ctx.beginPath();
-          ctx.moveTo(screen.x, screen.y - LS_MAP.tileH / 2);
-          ctx.lineTo(screen.x + LS_MAP.tileW / 2, screen.y);
-          ctx.lineTo(screen.x, screen.y + LS_MAP.tileH / 2);
-          ctx.lineTo(screen.x - LS_MAP.tileW / 2, screen.y);
-          ctx.closePath();
-          ctx.fill();
-        }
-
-        function drawLevelSelectSky() {
-          const sky = ctx.createLinearGradient(0, 0, 0, H);
-          sky.addColorStop(0, LS_THEME.voidTop);
-          sky.addColorStop(1, LS_THEME.voidBottom);
-          ctx.fillStyle = sky;
-          ctx.fillRect(0, 0, W, H);
-
-          const glow = ctx.createRadialGradient(
-            W / 2,
-            H * 0.46,
-            40,
-            W / 2,
-            H * 0.46,
-            W * 0.52,
-          );
-          glow.addColorStop(0, LS_THEME.glow);
-          glow.addColorStop(1, "rgba(255,206,120,0)");
-          ctx.fillStyle = glow;
-          ctx.fillRect(0, 0, W, H);
-
-          // The same country you play in, seen at dusk from far off: the island
-          // floats above it, and the keep on the horizon is where the trail ends.
-          const drift = -((levelSelectCamera.x * 0.06) % 620);
-          for (let i = -1; i < Math.ceil(W / 620) + 2; i++) {
-            const bx = drift + i * 620;
-            ctx.fillStyle = LS_THEME.duskHillFar;
-            ctx.beginPath();
-            ctx.moveTo(bx, H - 54);
-            ctx.quadraticCurveTo(bx + 310, H - 118, bx + 620, H - 54);
-            ctx.lineTo(bx + 620, H);
-            ctx.lineTo(bx, H);
-            ctx.closePath();
-            ctx.fill();
-            drawDuskKeep(bx + 96, H - 92);
+        function lsProp(name, sx, sy, scale = 1, shadow = 0.42) {
+          const def = LS_SPRITES[name];
+          if (def && shadow > 0) {
+            const r = def.w * scale * 0.36;
+            lsShadow(sx, sy + r * 0.14, r, r * 0.36, shadow);
           }
-          for (let i = -1; i < Math.ceil(W / 470) + 2; i++) {
-            const bx = drift * 1.6 + i * 470;
-            ctx.fillStyle = LS_THEME.duskHillNear;
-            ctx.beginPath();
-            ctx.moveTo(bx, H - 18);
-            ctx.quadraticCurveTo(bx + 235, H - 70, bx + 470, H - 18);
-            ctx.lineTo(bx + 470, H);
-            ctx.lineTo(bx, H);
-            ctx.closePath();
-            ctx.fill();
-          }
+          return lsSprite(name, sx, sy, scale);
         }
 
-        function drawDuskKeep(x, baseY) {
-          ctx.save();
-          ctx.fillStyle = LS_THEME.duskHillFar;
-          ctx.fillRect(x + 16, baseY - 26, 34, 30);
-          for (let i = 0; i < 3; i++) ctx.fillRect(x + 18 + i * 12, baseY - 32, 7, 7);
-          for (const tx of [x, x + 52]) {
-            ctx.fillRect(tx, baseY - 40, 14, 44);
-            ctx.beginPath();
-            ctx.moveTo(tx - 3, baseY - 40);
-            ctx.lineTo(tx + 7, baseY - 56);
-            ctx.lineTo(tx + 17, baseY - 40);
-            ctx.closePath();
-            ctx.fill();
-          }
-          ctx.fillStyle = "rgba(255,206,120,0.55)";
-          ctx.fillRect(x + 30, baseY - 18, 5, 6);
-          ctx.fillRect(x + 4, baseY - 30, 4, 5);
-          ctx.restore();
+        function drawFlowerTuft(cx, cy, seed) {
+          const petals = [
+            ["#FFFFFF", -6, 0],
+            ["#F7D774", 6, 3],
+            ["#F5A8C6", 0, -5],
+          ];
+          const pick = petals[Math.floor(lsNoise(seed) * 3)] || petals[0];
+          ctx.fillStyle = pick[0];
+          ctx.beginPath();
+          ctx.arc(cx + pick[1], cy + pick[2], 3.2, 0, Math.PI * 2);
+          ctx.fill();
         }
 
-        // The cliff faces are what turn a tile field into an object: land with a
-        // front edge, a shadow, and somewhere it stops.
-        function drawIslandCliff(screen) {
-          const hw = LS_MAP.tileW / 2;
-          const hh = LS_MAP.tileH / 2;
-          const d = LS_MAP.cliffDepth;
-          ctx.fillStyle = LS_THEME.soilTop;
-          ctx.beginPath();
-          ctx.moveTo(screen.x - hw, screen.y);
-          ctx.lineTo(screen.x, screen.y + hh);
-          ctx.lineTo(screen.x + hw, screen.y);
-          ctx.lineTo(screen.x + hw, screen.y + 7);
-          ctx.lineTo(screen.x, screen.y + hh + 7);
-          ctx.lineTo(screen.x - hw, screen.y + 7);
-          ctx.closePath();
-          ctx.fill();
-          ctx.fillStyle = LS_THEME.soilFace;
-          ctx.beginPath();
-          ctx.moveTo(screen.x - hw, screen.y);
-          ctx.lineTo(screen.x, screen.y + hh);
-          ctx.lineTo(screen.x, screen.y + hh + d);
-          ctx.lineTo(screen.x - hw, screen.y + d);
-          ctx.closePath();
-          ctx.fill();
-          ctx.fillStyle = LS_THEME.soilSide;
-          ctx.beginPath();
-          ctx.moveTo(screen.x + hw, screen.y);
-          ctx.lineTo(screen.x, screen.y + hh);
-          ctx.lineTo(screen.x, screen.y + hh + d);
-          ctx.lineTo(screen.x + hw, screen.y + d);
-          ctx.closePath();
-          ctx.fill();
-        }
+        // ---- the field ----
 
         function drawLevelSelectGround() {
-          const center = worldToGrid(levelSelectCamera.x, levelSelectCamera.y);
-          const gx0 = Math.floor(center.gx) - 10;
-          const gx1 = Math.ceil(center.gx) + 10;
-          const gy0 = Math.floor(center.gy) - 10;
-          const gy1 = Math.ceil(center.gy) + 10;
-          const tiles = [];
+          ctx.fillStyle = LS_THEME.field;
+          ctx.fillRect(0, 0, W, H);
+
+          const hw = LS_MAP.tileW / 2;
+          const hh = LS_MAP.tileH / 2;
+          const gx0 = Math.floor((levelSelectCamera.x - W) / LS_MAP.tileW) - 1;
+          const gx1 = Math.ceil((levelSelectCamera.x + W) / LS_MAP.tileW) + 1;
+          const gy0 = Math.floor((levelSelectCamera.y - H) / LS_MAP.tileH) - 1;
+          const gy1 = Math.ceil((levelSelectCamera.y + H) / LS_MAP.tileH) + 1;
+          ctx.fillStyle = LS_THEME.fieldAlt;
           for (let gx = gx0; gx <= gx1; gx++) {
             for (let gy = gy0; gy <= gy1; gy++) {
-              if (!isIslandTile(gx, gy)) continue;
-              const world = isoToWorld(gx, gy);
-              const screen = worldToScreen(world.x, world.y);
-              if (
-                screen.x < -160 ||
-                screen.x > W + 160 ||
-                screen.y < -140 ||
-                screen.y > H + 160
-              )
+              if (((gx + gy) & 1) !== 0) continue;
+              const s = worldToScreen(gx * LS_MAP.tileW, gy * LS_MAP.tileH);
+              if (s.x < -hw || s.x > W + hw || s.y < -hh || s.y > H + hh)
                 continue;
-              tiles.push({ gx, gy, screen, sort: world.y });
+              lsDiamondPath(s.x, s.y, hw, hh, 0);
+              ctx.fill();
             }
           }
-          tiles.sort((a, b) => a.sort - b.sort);
-
-          if (tiles.length) {
-            let minX = Infinity,
-              maxX = -Infinity,
-              maxY = -Infinity;
-            for (const t of tiles) {
-              minX = Math.min(minX, t.screen.x);
-              maxX = Math.max(maxX, t.screen.x);
-              maxY = Math.max(maxY, t.screen.y);
-            }
-            const cx = (minX + maxX) / 2;
-            const rx = (maxX - minX) / 2 + 120;
-            const cy = maxY + LS_MAP.cliffDepth + 18;
-            const ry = 74;
-            ctx.save();
-            ctx.translate(cx, cy);
-            ctx.scale(1, ry / rx);
-            const shadow = ctx.createRadialGradient(0, 0, rx * 0.25, 0, 0, rx);
-            shadow.addColorStop(0, "rgba(8,4,18,0.55)");
-            shadow.addColorStop(1, "rgba(8,4,18,0)");
-            ctx.fillStyle = shadow;
-            ctx.beginPath();
-            ctx.arc(0, 0, rx, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-          }
-
-          for (const t of tiles) {
-            const front =
-              !isIslandTile(t.gx + 1, t.gy) || !isIslandTile(t.gx, t.gy + 1);
-            if (front) drawIslandCliff(t.screen);
-            if (forestSheetReady) {
-              lsDrawAtlasFrame(
-                lsGroundFrame(t.gx, t.gy),
-                t.screen.x,
-                t.screen.y + 12,
-                LS_MAP.groundTileW,
-                0.55,
-                1,
-                "saturate(0.9) contrast(1.02) brightness(0.94)",
+          for (let gx = gx0; gx <= gx1; gx++) {
+            for (let gy = gy0; gy <= gy1; gy++) {
+              const n = lsNoise(gx * 31.3 + gy * 17.9);
+              if (n < 0.72) continue;
+              const s = worldToScreen(
+                gx * LS_MAP.tileW + (n - 0.5) * LS_MAP.tileW * 0.7,
+                gy * LS_MAP.tileH + (lsNoise(n) - 0.5) * LS_MAP.tileH * 0.7,
               );
-            } else {
-              const alt = ((t.gx + t.gy) & 1) === 0;
-              drawIsoDiamondTile(
-                t.screen,
-                alt ? "#659c52" : LS_THEME.groundDark,
-              );
+              if (s.x < -20 || s.x > W + 20 || s.y < -20 || s.y > H + 20)
+                continue;
+              drawFlowerTuft(s.x, s.y, gx * 7.3 + gy);
             }
-          }
-        }
-
-        function drawLevelSelectVignette() {
-          const v = ctx.createRadialGradient(
-            W / 2,
-            H / 2,
-            H * 0.42,
-            W / 2,
-            H / 2,
-            W * 0.72,
-          );
-          v.addColorStop(0, "rgba(10,5,20,0)");
-          v.addColorStop(1, "rgba(10,5,20,0.55)");
-          ctx.fillStyle = v;
-          ctx.fillRect(0, 0, W, H);
-        }
-
-        // Trail styling carries progress: walked ground is a solid ribbon, the
-        // stretch you have not earned yet is only a dotted survey line.
-        function drawLevelSelectPathSegment(a, b, walked) {
-          const pad = 80;
-          if (
-            (a.x < -pad && b.x < -pad) ||
-            (a.x > W + pad && b.x > W + pad) ||
-            (a.y < -pad && b.y < -pad) ||
-            (a.y > H + pad && b.y > H + pad)
-          ) {
-            return;
-          }
-          ctx.save();
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-
-          ctx.strokeStyle = LS_THEME.trailShadow;
-          ctx.lineWidth = walked ? 30 : 24;
-          ctx.beginPath();
-          ctx.moveTo(a.x, a.y + 5);
-          ctx.lineTo(b.x, b.y + 5);
-          ctx.stroke();
-
-          ctx.strokeStyle = walked ? LS_THEME.trailEdge : LS_THEME.trailEdgeCold;
-          ctx.lineWidth = walked ? 28 : 22;
-          ctx.beginPath();
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-          ctx.stroke();
-
-          ctx.strokeStyle = walked ? LS_THEME.trailFill : LS_THEME.trailFillCold;
-          ctx.lineWidth = walked ? 22 : 16;
-          ctx.beginPath();
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-          ctx.stroke();
-
-          if (walked) {
-            ctx.setLineDash([6, 10]);
-            ctx.strokeStyle = LS_THEME.trailDust;
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.moveTo(a.x, a.y);
-            ctx.lineTo(b.x, b.y);
-            ctx.stroke();
-          }
-          ctx.restore();
-        }
-
-        function drawLevelSelectPath() {
-          const first = Math.max(0, levelSelectIndex - 8);
-          const last = Math.min(LEVELS.length - 1, levelSelectIndex + 8);
-          for (let i = first; i < last; i++) {
-            const a = levelGridPoint(i);
-            const b = levelGridPoint(i + 1);
-            drawLevelSelectPathSegment(
-              isoToScreen(a.gx, a.gy, 0),
-              isoToScreen(b.gx, b.gy, 0),
-              i + 1 <= maxLevelUnlocked,
-            );
           }
         }
 
@@ -2285,204 +1906,152 @@
           return "available";
         }
 
-        function addDecorItem(items, frame, gx, gy, w, anchorY = 1) {
-          const world = isoToWorld(gx, gy);
-          items.push({
-            kind: "decor",
-            sort: world.y,
-            draw() {
-              const s = worldToScreen(world.x, world.y);
-              lsDrawAtlasFrame(
-                frame,
-                s.x,
-                s.y,
-                w,
-                anchorY,
-                1,
-                "saturate(0.9) contrast(1.02) brightness(0.92)",
-              );
-            },
-          });
-        }
-
-        // Slots are offset far enough sideways that nothing drawn in front of a
-        // stump can cover its number.
-        const LS_DECOR_SLOTS = {
-          backLeft: [-1.7, 0.3],
-          backRight: [0.3, -1.7],
-          frontRight: [1.8, 0.2],
-          frontLeft: [0.2, 1.8],
-          farRight: [2.2, -0.5],
-          farLeft: [-0.5, 2.2],
-        };
-
-        function addSlotDecor(items, index, frame, slot, w) {
-          const p = levelGridPoint(index);
-          const off = LS_DECOR_SLOTS[slot];
-          addDecorItem(items, frame, p.gx + off[0], p.gy + off[1], w);
-        }
-
-        function addLevelDecor(items, index) {
-          const rota = [
-            ["pineTree", "backLeft", 74],
-            ["bushBerry", "frontRight", 54],
-            ["rocks", "backRight", 76],
-            ["flowerBush", "frontLeft", 56],
-            ["log", "farLeft", 62],
-            ["bushWhite", "farRight", 56],
-          ];
-          const a = rota[index % rota.length];
-          const b = rota[(index * 3 + 2) % rota.length];
-          addSlotDecor(items, index, a[0], a[1], a[2]);
-          if (b[1] !== a[1]) addSlotDecor(items, index, b[0], b[1], b[2]);
-          if (index === 0) addSlotDecor(items, 0, "cabin", "backLeft", 124);
-          if (index % 5 === 3) addSlotDecor(items, index, "pond", "backRight", 116);
-          if (index % 4 === 2) addSlotDecor(items, index, "lantern", "farRight", 40);
-        }
-
-        function drawFallbackNode(index, s, state) {
-          const locked = state === "locked";
-          const selected = state === "selected";
-          const size = 58;
+        function drawPadlock(cx, cy, s, color) {
           ctx.save();
-          ctx.translate(s.x, s.y);
-          ctx.fillStyle = "rgba(0,0,0,0.26)";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 3.4 * s;
           ctx.beginPath();
-          ctx.ellipse(0, 23, 31, 9, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = locked
-            ? "#8d8677"
-            : selected
-              ? "#f2b25e"
-              : LS_THEME.nodeWood;
-          ctx.strokeStyle = locked ? "#5d574d" : LS_THEME.nodeBark;
-          ctx.lineWidth = selected ? 4 : 3;
-          ctx.beginPath();
-          ctx.ellipse(0, 0, size / 2, size / 3, 0, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.arc(cx, cy - 5 * s, 6 * s, Math.PI, 0);
           ctx.stroke();
+          ctx.fillStyle = color;
+          lsRoundedPath(cx - 9 * s, cy - 4 * s, 18 * s, 14 * s, 3 * s);
+          ctx.fill();
           ctx.restore();
         }
 
         function drawLevelSelectNode(index) {
-          const p = levelGridPoint(index);
-          const s = isoToScreen(p.gx, p.gy);
+          const p = levelWorldPoint(index);
+          const s = worldToScreen(p.x, p.y);
           const state = levelState(index);
           const locked = state === "locked";
-          const completed = state === "completed";
           const selected = state === "selected";
-          const spriteName = locked
-            ? "stoneBlock"
-            : selected
-              ? "stumpGold"
-              : "stumpDefault";
-          const dispW = LS_MAP.nodeW;
+          const w = LS_MAP.nodeW;
 
-          levelSelectHitAreas.push({ index, x: s.x, y: s.y, r: 58 });
+          levelSelectHitAreas.push({ index, x: s.x, y: s.y, r: w * 0.44 });
 
           if (selected) {
-            const pulse = lsReduceMotion ? 0.35 : (renderTick % 84) / 84;
+            const pulse = lsReduceMotion ? 0.4 : (renderTick % 96) / 96;
             ctx.save();
-            ctx.globalAlpha = 0.55 * (1 - pulse);
-            ctx.strokeStyle = LS_THEME.royal;
-            ctx.lineWidth = 4;
-            ctx.beginPath();
-            ctx.ellipse(
+            ctx.globalAlpha = 0.45 * (1 - pulse);
+            ctx.strokeStyle = LS_THEME.glow;
+            ctx.lineWidth = 6;
+            lsDiamondPath(
               s.x,
-              s.y + 10,
-              dispW * (0.34 + 0.22 * pulse),
-              dispW * (0.17 + 0.11 * pulse),
-              0,
-              0,
-              Math.PI * 2,
+              s.y + 6,
+              w * (0.56 + 0.16 * pulse),
+              w * 0.35 * (0.56 + 0.16 * pulse) * 2 * 0.31,
+              0.24,
             );
             ctx.stroke();
-            ctx.globalAlpha = 0.3;
-            ctx.fillStyle = LS_THEME.royal;
-            ctx.beginPath();
-            ctx.ellipse(s.x, s.y + 10, dispW * 0.34, dispW * 0.17, 0, 0, 6.29);
-            ctx.fill();
             ctx.restore();
           }
 
-          const placed = lsDrawAtlasFrame(
-            spriteName,
+          lsShadow(s.x, s.y + w * 0.2, w * 0.5, w * 0.19, 0.4);
+          lsSprite(
+            locked
+              ? "log-locked"
+              : state === "completed"
+                ? "log-cleared"
+                : "log-open",
             s.x,
             s.y,
-            dispW,
-            0.35,
-            1,
-            locked
-              ? "saturate(0.5) brightness(0.9) contrast(0.98)"
-              : "saturate(0.95) contrast(1.02) brightness(1)",
           );
-          if (!placed) drawFallbackNode(index, s, state);
-          const dh = placed ? placed.dh : dispW * 0.85;
-
-          if (!selected) {
-            pxText(String(index + 1), s.x, s.y + 2, 3, LS_THEME.cream, {
-              align: "center",
-              outline: locked ? "rgba(20,12,8,0.75)" : LS_THEME.ink,
-            });
-          }
-
-          if (completed) {
-            const bx = Math.round(s.x + dispW * 0.3);
-            const by = Math.round(s.y - dh * 0.12);
-            ctx.fillStyle = LS_THEME.royalDark;
-            ctx.beginPath();
-            ctx.arc(bx, by, 14, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = LS_THEME.royal;
-            ctx.beginPath();
-            ctx.arc(bx, by - 1, 13, 0, Math.PI * 2);
-            ctx.fill();
-            pxIcon(PX_CROWN, bx - 7, by - 5, 3, LS_THEME.goldDark);
-            pxIcon(PX_CROWN, bx - 7, by - 6, 3, LS_THEME.gold);
-          }
 
           if (locked) {
-            const bx = Math.round(s.x + dispW * 0.3);
-            const by = Math.round(s.y - dh * 0.12);
-            ctx.fillStyle = "rgba(16,9,28,0.78)";
-            ctx.beginPath();
-            ctx.arc(bx, by, 14, 0, Math.PI * 2);
-            ctx.fill();
-            pxIcon(PX_LOCK, bx - 7, by - 8, 3, "#D8CFBB");
+            drawPadlock(s.x, s.y + 2, w / 110, LS_THEME.lockedInk);
+          } else {
+            uiText(String(index + 1), s.x, s.y + 2, w * 0.25, "#FFFFFF", {
+              shadow: "rgba(74,50,32,0.45)",
+              shadowDy: 2,
+            });
           }
         }
 
-        // The marker is the princess herself: she stands on the level you have
-        // chosen and hops along the trail to the next one when you choose again.
-        const lsWalker = {
-          from: null,
-          to: null,
-          t: 1,
-          facing: 1,
-        };
+        // Landmarks are placed against the chain so the map reads as a place:
+        // home at the start, water at the far end, trees filling the gaps.
+        function buildVisibleMapItems() {
+          const items = [];
+          const first = Math.max(0, levelSelectIndex - 6);
+          const last = Math.min(LEVELS.length - 1, levelSelectIndex + 6);
+          const add = (sort, draw) => items.push({ sort, draw });
+          for (let i = first; i <= last; i++) {
+            const p = levelWorldPoint(i);
+            const side = i % 2 === 0 ? -1 : 1;
+            if (i === 0) {
+              add(p.y + 60, () => {
+                const q = worldToScreen(p.x + 500, p.y + 60);
+                lsProp("cabin", q.x, q.y);
+              });
+              add(p.y - 10, () => {
+                const q = worldToScreen(p.x - 215, p.y - 10);
+                lsProp("tree-oak", q.x, q.y);
+              });
+              add(p.y + 150, () => {
+                const q = worldToScreen(p.x - 250, p.y + 150);
+                lsProp("bush", q.x, q.y);
+              });
+            }
+            if (i % 3 === 1) {
+              add(p.y - 70, () => {
+                const q = worldToScreen(p.x - 130, p.y - 70);
+                lsProp("tree-pine", q.x, q.y);
+              });
+            }
+            if (i % 3 === 2) {
+              add(p.y + 255, () => {
+                const q = worldToScreen(p.x - 235, p.y + 255);
+                lsProp("bush", q.x, q.y, 1.1);
+              });
+            }
+            if (i % 4 === 3) {
+              add(p.y - 60, () => {
+                const q = worldToScreen(p.x + 150, p.y - 60);
+                lsProp("pond", q.x, q.y, 1, 0);
+              });
+            }
+            if (i % 2 === 0 && i > 0) {
+              add(p.y + 180, () => {
+                const q = worldToScreen(p.x + 190, p.y + 180);
+                lsProp("rocks", q.x, q.y);
+              });
+            }
+            if (i % 2 === 1) {
+              add(p.y + 95, () => {
+                const q = worldToScreen(p.x + 330, p.y + 95);
+                lsProp("bush", q.x, q.y, 0.8);
+              });
+            }
+            add(p.y, () => drawLevelSelectNode(i));
+          }
+          return items.sort((a, b) => a.sort - b.sort);
+        }
+
+        // The marker is Quinn herself: she stands on the level you have chosen
+        // and hops along the slices when you choose another.
+        const lsWalker = { from: null, to: null, t: 1, facing: 1 };
 
         function lsWalkerPoint() {
           const to = lsWalker.to == null ? levelSelectIndex : lsWalker.to;
           const from = lsWalker.from == null ? to : lsWalker.from;
           if (lsWalker.t >= 1 || from === to) {
-            const p = levelGridPoint(to);
-            return { s: isoToScreen(p.gx, p.gy), hop: 0 };
+            const p = levelWorldPoint(to);
+            return { s: worldToScreen(p.x, p.y), hop: 0 };
           }
           const steps = Math.abs(to - from);
           const travelled = lsWalker.t * steps;
           const leg = Math.min(steps - 1, Math.floor(travelled));
           const legT = travelled - leg;
           const dir = to > from ? 1 : -1;
-          const a = levelGridPoint(from + leg * dir);
-          const b = levelGridPoint(from + (leg + 1) * dir);
-          const sa = isoToScreen(a.gx, a.gy);
-          const sb = isoToScreen(b.gx, b.gy);
+          const a = levelWorldPoint(from + leg * dir);
+          const b = levelWorldPoint(from + (leg + 1) * dir);
+          const sa = worldToScreen(a.x, a.y);
+          const sb = worldToScreen(b.x, b.y);
           return {
             s: {
               x: sa.x + (sb.x - sa.x) * legT,
               y: sa.y + (sb.y - sa.y) * legT,
             },
-            hop: Math.sin(legT * Math.PI) * 26,
+            hop: Math.sin(legT * Math.PI) * 30,
           };
         }
 
@@ -2491,10 +2060,7 @@
             lsWalker.from = lsWalker.to == null ? levelSelectIndex : lsWalker.to;
             lsWalker.to = levelSelectIndex;
             lsWalker.t = 0;
-            const a = levelGridPoint(lsWalker.from);
-            const b = levelGridPoint(lsWalker.to);
-            lsWalker.facing =
-              isoToScreen(b.gx, b.gy).x >= isoToScreen(a.gx, a.gy).x ? 1 : -1;
+            lsWalker.facing = lsWalker.to >= lsWalker.from ? 1 : -1;
           }
           if (lsWalker.t < 1) {
             const steps = Math.max(1, Math.abs(lsWalker.to - lsWalker.from));
@@ -2508,28 +2074,16 @@
             lsWalker.t >= 1 && !lsReduceMotion
               ? Math.sin(renderTick * 0.09) * 2.5
               : 0;
-          const h = 86;
+          const h = 92;
           const w = h * 0.5;
-          const feetY = s.y - 8 - hop + idle;
+          const feetY = s.y + 2 - hop + idle;
 
-          ctx.save();
-          ctx.fillStyle = "rgba(10,5,20,0.35)";
-          ctx.beginPath();
-          ctx.ellipse(
-            s.x,
-            s.y + 2,
-            18 - hop * 0.25,
-            6 - hop * 0.08,
-            0,
-            0,
-            Math.PI * 2,
-          );
-          ctx.fill();
-          ctx.restore();
+          lsShadow(s.x, s.y + 10, 16 - hop * 0.3, 6 - hop * 0.1, 0.18);
 
           if (!playerSpriteReady) return;
           ctx.save();
-          ctx.imageSmoothingEnabled = false;
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
           if (lsWalker.facing < 0) {
             ctx.translate(s.x + w / 2, feetY - h);
             ctx.scale(-1, 1);
@@ -2540,146 +2094,65 @@
           ctx.restore();
         }
 
-        function buildVisibleMapItems() {
-          const items = [];
-          const first = Math.max(0, levelSelectIndex - 8);
-          const last = Math.min(LEVELS.length - 1, levelSelectIndex + 8);
-          for (let i = first; i <= last; i++) {
-            addLevelDecor(items, i);
-            const world = levelWorldPoint(i);
-            items.push({
-              kind: "node",
-              sort: world.y + 20,
-              draw() {
-                drawLevelSelectNode(i);
-              },
-            });
-          }
-          return items.sort((a, b) => a.sort - b.sort);
-        }
-
-        // Progress pips repeat the map's three states (cleared, open, locked) so
-        // the header answers "how far along am I" without a second vocabulary.
-        function drawProgressPips(rightX, y) {
-          const size = 10,
-            gap = 7;
-          const total = LEVELS.length;
-          if (total > 16) {
-            const barW = 168,
-              barH = 10;
-            const bx = rightX - barW;
-            ctx.fillStyle = "rgba(255,243,214,0.22)";
-            ctx.fillRect(bx, y, barW, barH);
-            ctx.fillStyle = LS_THEME.gold;
-            ctx.fillRect(
-              bx,
-              y,
-              Math.round((barW * maxLevelUnlocked) / total),
-              barH,
-            );
-            ctx.fillStyle = LS_THEME.cream;
-            ctx.fillRect(
-              bx + Math.round((barW * maxLevelUnlocked) / total) - 2,
-              y - 2,
-              4,
-              barH + 4,
-            );
-            return;
-          }
-          const width = total * size + (total - 1) * gap;
-          let x = rightX - width;
-          for (let i = 0; i < total; i++) {
-            const cx = x + size / 2;
-            const cy = y + size / 2;
-            ctx.beginPath();
-            ctx.moveTo(cx, cy - size / 2);
-            ctx.lineTo(cx + size / 2, cy);
-            ctx.lineTo(cx, cy + size / 2);
-            ctx.lineTo(cx - size / 2, cy);
-            ctx.closePath();
-            if (i < maxLevelUnlocked) {
-              ctx.fillStyle = LS_THEME.gold;
-              ctx.fill();
-            } else if (i === maxLevelUnlocked) {
-              ctx.fillStyle = LS_THEME.cream;
-              ctx.fill();
-            } else {
-              ctx.strokeStyle = "rgba(255,243,214,0.35)";
-              ctx.lineWidth = 2;
-              ctx.stroke();
-            }
-            x += size + gap;
-          }
+        function drawCrownMark(x, y, s, color) {
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(x - 9 * s, y + 6 * s);
+          ctx.lineTo(x - 9 * s, y - 6 * s);
+          ctx.lineTo(x - 3.5 * s, y - 1 * s);
+          ctx.lineTo(x, y - 8 * s);
+          ctx.lineTo(x + 3.5 * s, y - 1 * s);
+          ctx.lineTo(x + 9 * s, y - 6 * s);
+          ctx.lineTo(x + 9 * s, y + 6 * s);
+          ctx.closePath();
+          ctx.fill();
         }
 
         function drawLevelSelectUi() {
           const level = LEVELS[levelSelectIndex] || {};
-          const name = (level.name || "LEVEL " + (levelSelectIndex + 1))
-            .toString()
-            .toUpperCase();
-          const wordmark = "JUMPING QUINN";
-          const cardW = pxWidth(wordmark, 4) + 74;
-          const cardH = 54;
-          lsPlaque(
-            22,
-            20,
-            cardW,
-            cardH,
-            LS_THEME.parchment,
-            LS_THEME.parchmentDark,
-          );
-          pxIcon(PX_CROWN, 40, 43, 4, LS_THEME.goldDark);
-          pxIcon(PX_CROWN, 40, 41, 4, LS_THEME.gold);
-          pxText(wordmark, 76, 33, 4, LS_THEME.ink);
+          const name = titleCase(level.name || "Level " + (levelSelectIndex + 1));
 
-          drawProgressPips(W - 26, 30);
-          pxText(
-            maxLevelUnlocked + "/" + LEVELS.length + " CROWNS",
-            W - 26,
-            48,
-            2,
-            LS_THEME.creamDim,
-            { align: "right" },
-          );
-
-          const label = "PLAY " + name;
-          const btnW = pxWidth(label, 3) + 56;
-          const btnH = 52;
-          const btnX = Math.round((W - btnW) / 2);
-          const btnY = H - 88;
-          levelSelectPlayArea = { x: btnX, y: btnY, w: btnW, h: btnH };
-          pxText(
-            "LEVEL " + (levelSelectIndex + 1) + " OF " + LEVELS.length,
-            W / 2,
-            btnY - 20,
-            2,
-            LS_THEME.creamDim,
-            { align: "center" },
-          );
-          lsPlaque(btnX, btnY, btnW, btnH, LS_THEME.royal, LS_THEME.gold);
-          ctx.fillStyle = "rgba(255,255,255,0.16)";
-          ctx.fillRect(btnX + 3, btnY + 3, btnW - 6, 10);
-          pxText(label, W / 2, btnY + 17, 3, LS_THEME.cream, {
-            align: "center",
-            shadow: LS_THEME.royalDark,
+          drawCrownMark(38, 40, 1.5, LS_THEME.cta);
+          uiText("Jumping Quinn", 58, 40, 24, LS_THEME.ink, {
+            align: "left",
+            shadow: "rgba(12,26,12,0.4)",
           });
-
-          ctx.save();
-          ctx.fillStyle = LS_THEME.creamDim;
-          ctx.font = 'bold 11px "Courier New", monospace';
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "3px";
-          ctx.fillText(
-            viewport.touch
-              ? "TAP A STUMP TO PLAY  ·  DRAG TO LOOK AROUND"
-              : "← →  CHOOSE     ENTER  PLAY     DRAG  LOOK AROUND",
-            W / 2,
-            H - 20,
+          uiText(
+            maxLevelUnlocked + " of " + LEVELS.length + " cleared",
+            W - 26,
+            40,
+            16,
+            LS_THEME.inkDim,
+            { align: "right", weight: 700 },
           );
-          ctx.restore();
-          ctx.textAlign = "start";
-          ctx.textBaseline = "top";
+
+          const label = "Play " + name;
+          const btnW = Math.max(360, uiTextWidth(label, 25) + 96);
+          const btnH = 64;
+          const btnX = Math.round((W - btnW) / 2);
+          const btnY = H - 96;
+          levelSelectPlayArea = { x: btnX, y: btnY, w: btnW, h: btnH };
+          ctx.fillStyle = "rgba(12,26,12,0.35)";
+          lsRoundedPath(btnX, btnY + 7, btnW, btnH, 20);
+          ctx.fill();
+          ctx.fillStyle = LS_THEME.ctaDark;
+          lsRoundedPath(btnX, btnY + 4, btnW, btnH, 20);
+          ctx.fill();
+          ctx.fillStyle = LS_THEME.cta;
+          lsRoundedPath(btnX, btnY, btnW, btnH, 20);
+          ctx.fill();
+          uiText(label, W / 2, btnY + btnH / 2 + 1, 25, LS_THEME.ctaInk);
+
+          uiText(
+            viewport.touch
+              ? "Tap a log to choose"
+              : "← →  choose      Enter  play      drag  look around",
+            W / 2,
+            H - 18,
+            13,
+            "rgba(255,255,255,0.45)",
+            { weight: 700 },
+          );
         }
 
         function drawLevelSelect() {
@@ -2687,14 +2160,10 @@
           levelSelectPlayArea = null;
           if (!levelSelectCamera.initialized) centerLevelSelectCamera(true);
 
-          drawLevelSelectSky();
           drawLevelSelectGround();
-          drawLevelSelectPath();
-
           const items = buildVisibleMapItems();
           for (const item of items) item.draw();
           drawLevelSelectWalker();
-          drawLevelSelectVignette();
           drawLevelSelectUi();
         }
 
@@ -2703,10 +2172,10 @@
           ctx.fillRect(0, 0, W, H);
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          pxText("TURN SIDEWAYS", W / 2, H / 2 - 72, 6, LS_THEME.gold, {
+          uiText("Turn sideways", W / 2, H / 2 - 60, 46, LS_THEME.gold, {
             align: "center",
             shadow: "rgba(20,10,28,0.85)",
-            shadowOffset: 3,
+            shadowDy: 3,
           });
           ctx.fillStyle = "#FFFFFF";
           ctx.font = 'bold 24px "Courier New", monospace';
@@ -2722,11 +2191,24 @@
         }
 
         let renderTick = 0;
+        // The platformer wants its 960x540 pixel grid; the map wants real
+        // resolution for smooth illustration. Only the backing store changes —
+        // every coordinate in the code stays in 960x540 space.
+        const MAP_RES_TARGET = Math.min(
+          2,
+          Math.max(1, Math.round(window.devicePixelRatio || 1)),
+        );
+        let mapResolution = 1;
+
         function syncCanvasPresentation() {
-          const imageRendering =
-            GameState.current === "LEVEL_SELECT" && forestSheetReady
-              ? "auto"
-              : "pixelated";
+          const onMap = GameState.current === "LEVEL_SELECT";
+          const wantRes = onMap ? MAP_RES_TARGET : 1;
+          if (mapResolution !== wantRes) {
+            mapResolution = wantRes;
+            canvas.width = W * wantRes;
+            canvas.height = H * wantRes;
+          }
+          const imageRendering = onMap ? "auto" : "pixelated";
           if (canvas.style.imageRendering !== imageRendering) {
             canvas.style.imageRendering = imageRendering;
           }
@@ -2734,6 +2216,7 @@
 
         function render() {
           syncCanvasPresentation();
+          ctx.setTransform(mapResolution, 0, 0, mapResolution, 0, 0);
 
           if (GameState.current === "LEVEL_SELECT") {
             drawLevelSelect();
