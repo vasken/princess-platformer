@@ -1812,6 +1812,7 @@
           "rocks": { w: 150, anchor: 0.9688 },
           "pond": { w: 250, anchor: 0.4992 },
           "cabin": { w: 200, anchor: 0.9613 },
+          quinn: { w: 49, anchor: 0.9984 },
         };
         const lsImages = {};
         for (const spriteName of Object.keys(LS_SPRITES)) {
@@ -1820,7 +1821,7 @@
           lsImages[spriteName] = img;
         }
 
-        function lsSprite(name, sx, sy, scale = 1) {
+        function lsSprite(name, sx, sy, scale = 1, flip = false) {
           const def = LS_SPRITES[name];
           const img = lsImages[name];
           if (!def || !img || !img.complete || !img.naturalWidth) return null;
@@ -1834,7 +1835,13 @@
           ctx.save();
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = "high";
-          ctx.drawImage(img, dx, dy, dw, dh);
+          if (flip) {
+            ctx.translate(sx, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(img, -dw / 2, dy, dw, dh);
+          } else {
+            ctx.drawImage(img, dx, dy, dw, dh);
+          }
           ctx.restore();
           return { dw, dh };
         }
@@ -2074,23 +2081,20 @@
             lsWalker.t >= 1 && !lsReduceMotion
               ? Math.sin(renderTick * 0.09) * 2.5
               : 0;
-          const h = 92;
-          const w = h * 0.5;
           const feetY = s.y + 2 - hop + idle;
 
-          lsShadow(s.x, s.y + 10, 16 - hop * 0.3, 6 - hop * 0.1, 0.18);
+          lsShadow(s.x, s.y + 10, 18 - hop * 0.3, 7 - hop * 0.1, 0.22);
 
+          if (lsSprite("quinn", s.x, feetY, 1, lsWalker.facing < 0)) return;
+
+          // Fallback to the in-game pixel sprite until the map art has loaded.
           if (!playerSpriteReady) return;
+          const h = 92;
+          const w = h * 0.5;
           ctx.save();
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = "high";
-          if (lsWalker.facing < 0) {
-            ctx.translate(s.x + w / 2, feetY - h);
-            ctx.scale(-1, 1);
-            ctx.drawImage(playerSprite, 0, 0, w, h);
-          } else {
-            ctx.drawImage(playerSprite, s.x - w / 2, feetY - h, w, h);
-          }
+          ctx.drawImage(playerSprite, s.x - w / 2, feetY - h, w, h);
           ctx.restore();
         }
 

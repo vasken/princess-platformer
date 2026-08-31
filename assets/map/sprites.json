@@ -8,7 +8,8 @@
     "bush": 132,
     "rocks": 150,
     "pond": 250,
-    "cabin": 200
+    "cabin": 200,
+    "quinn": 49
   },
   "anchor": {
     "log-open": 0.4174,
@@ -19,6 +20,7 @@
     "bush": 0.9591,
     "rocks": 0.9688,
     "pond": 0.4992,
-    "cabin": 0.9613
+    "cabin": 0.9613,
+    "quinn": 0.9984
   }
 }
